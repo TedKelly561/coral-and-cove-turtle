@@ -1,0 +1,6 @@
+{
+  "name": "Coral & Cove: A Sea Turtle Odyssey",
+  "description": "A tranquil 3D two-player ocean exploration game where a mother sea turtle and her hatchling swim together through coral reefs, shipwrecks, kelp forests, and tropical island beaches.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
