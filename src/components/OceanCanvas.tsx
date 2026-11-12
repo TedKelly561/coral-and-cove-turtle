@@ -757,7 +757,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         } else if (currentProps.babyFollowingMom && !p2HasManualInput && !isSinglePlayerBaby) {
           // In Mom-lead mode, Baby glides gently toward Mom without creating any pull or drag on Mom
           _vec3A
-            .set(2.35, 0.25, -1.1)
+            .set(3.1, 0.25, -1.4)
             .applyAxisAngle(_vec3B.set(0, 1, 0), momHeading)
             .add(momPos);
           const distToSlot = babyPos.distanceTo(_vec3A);
@@ -811,6 +811,24 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
 
         // Impassable Solid Obstacles (Shipwrecks & Coconut Cove Lighthouse)
         resolveSolidObstacles(babyPos, 0.65);
+
+        // Keep the two shells from passing through each other. Baby gives way,
+        // except while riding on Mom's back, where touching is the point.
+        if (!currentProps.piggybackActive) {
+          const sepX = babyPos.x - momPos.x;
+          const sepZ = babyPos.z - momPos.z;
+          const sepY = babyPos.y - momPos.y;
+          const flatDist = Math.hypot(sepX, sepZ);
+          const minFlatDist = 2.5;
+          if (flatDist < minFlatDist && Math.abs(sepY) < 1.1) {
+            // Directly on top of each other: slide out to Mom's side.
+            const nx = flatDist > 0.001 ? sepX / flatDist : Math.cos(momHeading);
+            const nz = flatDist > 0.001 ? sepZ / flatDist : -Math.sin(momHeading);
+            const push = (minFlatDist - flatDist) * Math.min(1, dt * 9);
+            babyPos.x += nx * push;
+            babyPos.z += nz * push;
+          }
+        }
 
         // --- SEAWEED GRAZING / MUNCHING INTERACTION ---
         worldRig.edibleSeaweedPatches.forEach((patch) => {

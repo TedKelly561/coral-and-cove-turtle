@@ -398,13 +398,15 @@ export function buildOceanWorld(
   };
 
   const waterMat = new THREE.MeshPhysicalMaterial({
-    color: 0x14b8a6,
-    roughness: 0.12,
-    metalness: 0.08,
-    clearcoat: 1.0,
-    clearcoatRoughness: 0.08,
+    // Kept deep and fairly clear: a pale, mostly opaque sheet here washes out
+    // the whole reef whenever the camera sits above the waterline.
+    color: 0x0b6f86,
+    roughness: 0.22,
+    metalness: 0.0,
+    clearcoat: 0.35,
+    clearcoatRoughness: 0.2,
     transparent: true,
-    opacity: 0.68,
+    opacity: 0.34,
     side: THREE.DoubleSide,
     depthWrite: false,
   });

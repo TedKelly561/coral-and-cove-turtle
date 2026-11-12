@@ -2088,6 +2088,41 @@ export function createSeaAnemone(colorHex: number): SwayingAnemone {
   return { group, tentacles, basePos: new THREE.Vector3() };
 }
 
+let seaFanAlphaTexture: THREE.CanvasTexture | null = null;
+
+/** White-on-black branching pattern shared by every sea fan (deterministic, built once). */
+function getSeaFanAlphaTexture(): THREE.CanvasTexture {
+  if (seaFanAlphaTexture) return seaFanAlphaTexture;
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, size, size);
+  ctx.strokeStyle = '#fff';
+  ctx.lineCap = 'round';
+
+  const branch = (x: number, y: number, angle: number, length: number, width: number, depth: number) => {
+    const ex = x + Math.sin(angle) * length;
+    const ey = y - Math.cos(angle) * length;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+    if (depth === 0) return;
+    const spread = 0.34 + (depth % 2) * 0.08;
+    branch(ex, ey, angle - spread, length * 0.78, Math.max(2.2, width * 0.72), depth - 1);
+    branch(ex, ey, angle + spread, length * 0.78, Math.max(2.2, width * 0.72), depth - 1);
+    if (depth > 2) branch(ex, ey, angle, length * 0.7, Math.max(2.2, width * 0.72), depth - 2);
+  };
+  branch(size / 2, size, 0, 50, 11, 6);
+
+  seaFanAlphaTexture = new THREE.CanvasTexture(canvas);
+  return seaFanAlphaTexture;
+}
+
 /**
  * Delicate Gorgonian Sea Fan Coral
  */
@@ -2098,8 +2133,9 @@ export function createSeaFan(colorHex: number): SwayingSeaFan {
     color: colorHex,
     roughness: 0.6,
     side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.88,
+    // Branching lattice cut-out, so the fan reads as coral rather than a flat card.
+    alphaMap: getSeaFanAlphaTexture(),
+    alphaTest: 0.5,
   });
   const mesh = new THREE.Mesh(fanGeo, fanMat);
   return {
