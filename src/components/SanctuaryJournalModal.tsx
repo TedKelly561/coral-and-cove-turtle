@@ -10,6 +10,7 @@ import {
 } from '../types/game';
 import {
   deleteDriveFile,
+  DRIVE_NOT_CONFIGURED_MESSAGE,
   googleSignIn,
   initAuth,
   listOceanDriveFiles,
@@ -140,8 +141,12 @@ export const SanctuaryJournalModal: React.FC<SanctuaryJournalModalProps> = ({
         setDriveFiles(files);
         setStatusMessage('Connected to Google Drive.');
       }
-    } catch {
-      setErrorMessage('Sign-in was cancelled or could not complete.');
+    } catch (err: unknown) {
+      setErrorMessage(
+        err instanceof Error && err.message === DRIVE_NOT_CONFIGURED_MESSAGE
+          ? DRIVE_NOT_CONFIGURED_MESSAGE
+          : 'Sign-in was cancelled or could not complete.'
+      );
     } finally {
       setIsBusy(false);
     }

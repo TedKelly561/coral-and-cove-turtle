@@ -1,18 +1,53 @@
-import { initializeApp, getApps } from 'firebase/app';
+import { initializeApp, getApps, FirebaseOptions } from 'firebase/app';
 import {
   getAuth,
   signInWithPopup,
   GoogleAuthProvider,
   onAuthStateChanged,
+  Auth,
   User,
 } from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
 import { DriveFileEntry, SavedOceanJournal } from '../types/game';
 
 export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const auth = getAuth(app);
+// Firebase settings are never committed. They come from either:
+//   1. firebase-applet-config.json at the project root (git-ignored; AI Studio generates it), or
+//   2. VITE_FIREBASE_* variables in .env.local (see .env.example).
+const localConfigFiles = import.meta.glob<FirebaseOptions>('../../firebase-applet-config.json', {
+  eager: true,
+  import: 'default',
+});
+
+const loadFirebaseConfig = (): FirebaseOptions | null => {
+  const fromFile = Object.values(localConfigFiles)[0];
+  if (fromFile?.apiKey) return fromFile;
+
+  const env = import.meta.env;
+  if (!env.VITE_FIREBASE_API_KEY) return null;
+  return {
+    apiKey: env.VITE_FIREBASE_API_KEY,
+    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: env.VITE_FIREBASE_PROJECT_ID,
+    appId: env.VITE_FIREBASE_APP_ID,
+    storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  };
+};
+
+const firebaseConfig = loadFirebaseConfig();
+
+/** False when no Firebase settings are present; the game still runs, Drive saves are off. */
+export const isDriveConfigured = firebaseConfig !== null;
+
+export const DRIVE_NOT_CONFIGURED_MESSAGE =
+  'Google Drive saves are not set up for this copy of the game. Add your Firebase settings to .env.local (see .env.example).';
+
+let auth: Auth | null = null;
+if (firebaseConfig) {
+  const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+  auth = getAuth(app);
+}
 
 const provider = new GoogleAuthProvider();
 SCOPES.forEach((scope) => provider.addScope(scope));
@@ -24,6 +59,10 @@ export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
+  if (!auth) {
+    if (onAuthFailure) onAuthFailure();
+    return () => {};
+  }
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
       if (cachedAccessToken) {
@@ -40,6 +79,7 @@ export const initAuth = (
 };
 
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
+  if (!auth) throw new Error(DRIVE_NOT_CONFIGURED_MESSAGE);
   try {
     isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
@@ -63,7 +103,7 @@ export const getAccessToken = async (): Promise<string | null> => {
 };
 
 export const logout = async () => {
-  await auth.signOut();
+  await auth?.signOut();
   cachedAccessToken = null;
 };
 
