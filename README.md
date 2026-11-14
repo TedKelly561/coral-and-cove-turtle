@@ -5,14 +5,14 @@ A tranquil 3D two-player ocean exploration game. A mother sea turtle and her hat
 ## Run it locally
 
 ```bash
-bun install
+npm install
 ```
 
 ```bash
-bun run dev
+npm run dev
 ```
 
-Then open http://localhost:3000. `npm install` and `npm run dev` work too.
+Then open http://localhost:3000.
 
 ## Controls
 
@@ -26,6 +26,10 @@ The game runs without any keys. To switch on "Google Drive Saves & Postcards", c
 
 ## Scripts
 
-- `bun run dev`: start the dev server
-- `bun run build`: production build into `dist/`
-- `bun run lint`: type-check
+- `npm run dev`: start the dev server
+- `npm run build`: production build into `dist/`
+- `npm run lint`: type-check
+
+## Hosting
+
+Cloudflare builds and publishes the game from `main` using `wrangler.jsonc`. The repo uses an npm lockfile (`package-lock.json`) because Cloudflare's build image could not read the newer `bun.lock` format.
