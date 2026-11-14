@@ -25,6 +25,7 @@ import {
   getZoneNameAt,
   groundHeightAt,
   resolveSolidObstacles,
+  grottoDepthFactor,
   sampleFootprintGround,
 } from '../three/world';
 import { TurtleBubbleTrailSystem } from '../three/bubbleTrail';
@@ -37,6 +38,7 @@ const _vec3C = new THREE.Vector3();
 const _currentVec = new THREE.Vector3();
 const _skyColor = new THREE.Color();
 const _underwaterFogColor = new THREE.Color();
+const _grottoFogColor = new THREE.Color(0x070b24);
 const _sunColor = new THREE.Color();
 const _hemiSkyColor = new THREE.Color();
 const _hemiGroundColor = new THREE.Color();
@@ -495,11 +497,25 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
       }
       sunKeyLight.color.copy(_sunColor);
       const baseSunIntensity = THREE.MathUtils.lerp(0.85, 2.55, dayFactor);
-      sunKeyLight.intensity = isRainWeather
-        ? baseSunIntensity * 0.62
-        : isMistWeather
-          ? baseSunIntensity * 0.78
-          : baseSunIntensity;
+      // Twilight inside the Bioluminescent Grotto: daylight falls away so the glow can read.
+      const grottoFactor = grottoDepthFactor(
+        simRef.current.momPos.x,
+        simRef.current.momPos.y,
+        simRef.current.momPos.z
+      );
+      sunKeyLight.intensity =
+        (isRainWeather
+          ? baseSunIntensity * 0.62
+          : isMistWeather
+            ? baseSunIntensity * 0.78
+            : baseSunIntensity) *
+        (1 - grottoFactor * 0.94);
+      hemiLight.intensity = 1.35 * (1 - grottoFactor * 0.86);
+      rimLight.intensity = 0.75 * (1 - grottoFactor * 0.8);
+      // The studio reflection map is a constant fill light. Left alone it keeps the
+      // whole world daylight-bright at night and inside the grotto.
+      scene.environmentIntensity =
+        THREE.MathUtils.lerp(0.35, 1.0, dayFactor) * (1 - grottoFactor * 0.85);
 
       _hemiSkyColor
         .setHex(0x0f172a)
@@ -639,8 +655,23 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
 
         // Strict 5-Point Sand Collision for Mother Turtle
         const momFootprint = sampleFootprintGround(momPos.x, momPos.z, momHeading, 1.5, 1.3);
-        const momMaxY = momFootprint.maxGroundY > 0 ? momFootprint.maxGroundY + 0.36 : 0.25;
-        momPos.y = THREE.MathUtils.clamp(momPos.y, momFootprint.maxGroundY + 0.48, momMaxY);
+        // On the beach she rests her belly on the sand and tilts with the slope,
+        // instead of hovering above the highest point under her.
+        const momLandT = THREE.MathUtils.smoothstep(momFootprint.maxGroundY, -0.2, 0.4);
+        const momMinY = THREE.MathUtils.lerp(
+          momFootprint.maxGroundY + 0.48,
+          momFootprint.restGroundY + 0.36,
+          momLandT
+        );
+        const momMaxY = momFootprint.maxGroundY > 0 ? momMinY : 0.25;
+        momPos.y = THREE.MathUtils.clamp(momPos.y, momMinY, Math.max(momMinY, momMaxY));
+        if (momLandT > 0) {
+          const slopePitch = -Math.atan2(
+            momFootprint.noseGroundY - momFootprint.tailGroundY,
+            3.0
+          );
+          momPitch = THREE.MathUtils.lerp(momPitch, slopePitch, momLandT * (1 - Math.exp(-8 * dt)));
+        }
         momPos.x = THREE.MathUtils.clamp(momPos.x, -85, 85);
         momPos.z = THREE.MathUtils.clamp(momPos.z, -85, 85);
 
@@ -803,9 +834,29 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
 
         // Strict 5-Point Sand Collision for Baby Turtle
         const babyFootprint = sampleFootprintGround(babyPos.x, babyPos.z, babyHeading, 0.9, 0.8);
-        const babyMaxY =
-          babyFootprint.maxGroundY > 0 ? babyFootprint.maxGroundY + 0.28 : 0.22;
-        babyPos.y = THREE.MathUtils.clamp(babyPos.y, babyFootprint.maxGroundY + 0.36, babyMaxY);
+        const babyLandT = THREE.MathUtils.smoothstep(babyFootprint.maxGroundY, -0.2, 0.4);
+        const babyMinY = THREE.MathUtils.lerp(
+          babyFootprint.maxGroundY + 0.36,
+          babyFootprint.restGroundY + 0.2,
+          babyLandT
+        );
+        const babyMaxY = babyFootprint.maxGroundY > 0 ? babyMinY : 0.22;
+        if (!currentProps.piggybackActive) {
+          babyPos.y = THREE.MathUtils.clamp(babyPos.y, babyMinY, Math.max(babyMinY, babyMaxY));
+          if (babyLandT > 0) {
+            const slopePitch = -Math.atan2(
+              babyFootprint.noseGroundY - babyFootprint.tailGroundY,
+              1.8
+            );
+            babyPitch = THREE.MathUtils.lerp(
+              babyPitch,
+              slopePitch,
+              babyLandT * (1 - Math.exp(-8 * dt))
+            );
+          }
+        } else {
+          babyPos.y = Math.max(babyPos.y, babyMinY);
+        }
         babyPos.x = THREE.MathUtils.clamp(babyPos.x, -85, 85);
         babyPos.z = THREE.MathUtils.clamp(babyPos.z, -85, 85);
 
@@ -1316,9 +1367,11 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         } else if (isMistWeather) {
           _underwaterFogColor.lerp(new THREE.Color(0x158096), 0.35);
         }
+        _underwaterFogColor.lerp(_grottoFogColor, grottoFactor * 0.88);
         (scene.background as THREE.Color).copy(_underwaterFogColor);
         sceneFog.color.copy(_underwaterFogColor);
-        sceneFog.density = isRainWeather ? 0.019 : isMistWeather ? 0.021 : 0.016;
+        sceneFog.density =
+          (isRainWeather ? 0.019 : isMistWeather ? 0.021 : 0.016) + grottoFactor * 0.012;
       } else {
         _skyColor
           .setHex(0x091526)

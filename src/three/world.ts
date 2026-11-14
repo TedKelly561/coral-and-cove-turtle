@@ -15,6 +15,10 @@ import {
   createMoonJellyfish,
   createSeaAnemone,
   createSeaFan,
+  createGrotto,
+  GROTTO_CENTER,
+  GROTTO_RING,
+  withNearCameraFade,
   createShipwreck,
   createSpottedEagleRay,
   createStaghornCoral,
@@ -57,7 +61,34 @@ export const SOLID_OBSTACLES: ObstacleCollider[] = [
   { x: 33.6, z: -45.2, radius: 2.7, minY: -14.0, maxY: -2.0, name: 'Brigantine Stern Castle' },
 ];
 
+/**
+ * The grotto's rock ring as one smooth wall. A turtle touching it is eased back to the
+ * nearer side, so it slides along the rock to an opening instead of wedging between spires.
+ * Swimming over the top (near the surface) is allowed.
+ */
+function resolveGrottoWall(pos: THREE.Vector3, turtleRadius: number): void {
+  if (pos.y > -2.0) return;
+  const dx = pos.x - GROTTO_CENTER.x;
+  const dz = pos.z - GROTTO_CENTER.z;
+  const dist = Math.hypot(dx, dz);
+  const halfThickness = 2.3 + turtleRadius;
+  const offset = dist - GROTTO_RING.radius;
+  if (Math.abs(offset) >= halfThickness || dist < 0.001) return;
+
+  const angle = Math.atan2(dz, dx);
+  const inOpening = GROTTO_RING.gapAngles.some((g) => {
+    const d = Math.atan2(Math.sin(angle - g), Math.cos(angle - g));
+    return Math.abs(d) < GROTTO_RING.gapHalfWidth - 0.16;
+  });
+  if (inOpening) return;
+
+  const target = GROTTO_RING.radius + (offset >= 0 ? halfThickness : -halfThickness);
+  pos.x = GROTTO_CENTER.x + (dx / dist) * target;
+  pos.z = GROTTO_CENTER.z + (dz / dist) * target;
+}
+
 export function resolveSolidObstacles(pos: THREE.Vector3, turtleRadius: number): void {
+  resolveGrottoWall(pos, turtleRadius);
   for (const obs of SOLID_OBSTACLES) {
     if (pos.y >= obs.minY && pos.y <= obs.maxY) {
       const dx = pos.x - obs.x;
@@ -141,6 +172,17 @@ export function groundHeightAt(x: number, z: number): number {
 }
 
 /**
+ * How deep inside the Bioluminescent Grotto a point is: 0 outside, 1 near the middle.
+ * Drives the twilight lighting there.
+ */
+export function grottoDepthFactor(x: number, y: number, z: number): number {
+  const d = Math.hypot(x - GROTTO_CENTER.x, z - GROTTO_CENTER.z);
+  const inside = 1 - THREE.MathUtils.smoothstep(d, 9, 21);
+  const submerged = 1 - THREE.MathUtils.smoothstep(y, -5.5, -2.5);
+  return inside * submerged;
+}
+
+/**
  * Multi-point 3D Seabed & Sand Collision Helper:
  * Samples 5 points across a creature's body footprint (center, nose, tail, left fin, right fin)
  * and returns the highest ground elevation underneath any part of the creature, plus the slope pitch.
@@ -151,7 +193,7 @@ export function sampleFootprintGround(
   heading: number,
   halfLength: number,
   halfWidth: number
-): { maxGroundY: number; noseGroundY: number; tailGroundY: number } {
+): { maxGroundY: number; noseGroundY: number; tailGroundY: number; restGroundY: number } {
   const sinH = Math.sin(heading);
   const cosH = Math.cos(heading);
 
@@ -165,6 +207,8 @@ export function sampleFootprintGround(
     maxGroundY: Math.max(gCenter, gNose, gTail, gLeft, gRight),
     noseGroundY: gNose,
     tailGroundY: gTail,
+    // Height a body resting on this slope sits at (no hovering above the high point).
+    restGroundY: Math.max(gCenter, (gNose + gTail) / 2, (gLeft + gRight) / 2),
   };
 }
 
@@ -616,6 +660,7 @@ export function buildOceanWorld(
         transformed.z += cos(uTime * 1.5 + transformed.y * 1.2 + instanceMatrix[3][2] * 0.5) * 0.30 * heightRatio * heightRatio;
         `
       );
+    shader.fragmentShader = withNearCameraFade(shader.fragmentShader);
   };
 
   const kelpInstanced = new THREE.InstancedMesh(kelpGeo, kelpMat, kelpCount);
@@ -746,13 +791,44 @@ export function buildOceanWorld(
   // 7. Underwater Sunbeam God-Rays
   const sunBeamsGroup = new THREE.Group();
   const beamGeo = new THREE.ConeGeometry(3.2, 16, 12, 1, true);
-  const beamMat = new THREE.MeshBasicMaterial({
-    color: 0x99f6e4,
+  // Soft-edged shafts: brightest where the cone faces the camera, fading out at the
+  // silhouette, toward the seabed and into the distance, so no hard cone outline shows.
+  const beamUniforms = {
+    uColor: { value: new THREE.Color(0x99f6e4) },
+    uOpacity: { value: 0.075 },
+  };
+  const beamMat = new THREE.ShaderMaterial({
+    uniforms: beamUniforms,
     transparent: true,
-    opacity: 0.075,
     side: THREE.DoubleSide,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vViewPosition;
+      void main() {
+        vUv = uv;
+        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        vNormal = normalize(normalMatrix * normal);
+        vViewPosition = -mvPosition.xyz;
+        gl_Position = projectionMatrix * mvPosition;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uOpacity;
+      varying vec2 vUv;
+      varying vec3 vNormal;
+      varying vec3 vViewPosition;
+      void main() {
+        float facing = abs(dot(normalize(vNormal), normalize(vViewPosition)));
+        float edge = smoothstep(0.0, 0.75, facing);
+        float towardSeabed = smoothstep(0.0, 0.55, vUv.y);
+        float distance = 1.0 - smoothstep(35.0, 85.0, length(vViewPosition));
+        gl_FragColor = vec4(uColor, uOpacity * 1.7 * edge * edge * towardSeabed * distance);
+      }
+    `,
   });
 
   for (let b = 0; b < 10; b++) {
@@ -764,6 +840,10 @@ export function buildOceanWorld(
     sunBeamsGroup.add(beam);
   }
   scene.add(sunBeamsGroup);
+
+  // 7B. Bioluminescent Grotto: rock ring, entrance arches and glowing crystals
+  const grotto = createGrotto(groundHeightAt);
+  scene.add(grotto.group);
 
   // 8. Gentle Ocean Current Stream & Plankton Shimmer Particles
   const pCount = 320;
@@ -1208,8 +1288,11 @@ export function buildOceanWorld(
     }
 
     coralMaterial.emissiveIntensity = THREE.MathUtils.lerp(0.06, 0.55, nightFactor);
+    grotto.glowMaterials.forEach((mat, gi) => {
+      mat.emissiveIntensity = 0.9 + Math.sin(elapsed * 1.3 + gi * 1.7) * 0.3;
+    });
     pMat.opacity = THREE.MathUtils.lerp(0.45, 0.88, nightFactor);
-    beamMat.opacity =
+    beamUniforms.uOpacity.value =
       weatherMood === 'sunlit_calm' || weatherMood === 'golden_shimmer'
         ? THREE.MathUtils.lerp(0.11, 0.02, nightFactor)
         : isMist

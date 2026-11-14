@@ -282,6 +282,24 @@ export interface EdibleSeaweedPatch {
 /**
  * Multi-Part Textured Edible Sea-Lettuce & Ribbon Kelp Patch for Turtles to Munch
  */
+const NEAR_CAMERA_FADE_GLSL = `
+  {
+    // Dissolve the parts of a leaf that sit right against the camera lens,
+    // so a blade drifting through the view never fills the whole screen.
+    float nearFade = smoothstep(1.6, 4.5, length(vViewPosition));
+    float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    if (nearFade < ign) discard;
+  }
+`;
+
+/** Adds the near-camera dissolve to a standard material's fragment shader source. */
+export function withNearCameraFade(fragmentShader: string): string {
+  return fragmentShader.replace(
+    '#include <dithering_fragment>',
+    NEAR_CAMERA_FADE_GLSL + '#include <dithering_fragment>'
+  );
+}
+
 export function createEdibleSeaweedPatch(
   id: string,
   x: number,
@@ -315,6 +333,9 @@ export function createEdibleSeaweedPatch(
     metalness: 0.05,
     side: THREE.DoubleSide,
   });
+  leafMat.onBeforeCompile = (shader) => {
+    shader.fragmentShader = withNearCameraFade(shader.fragmentShader);
+  };
 
   const frondShape = new THREE.Shape();
   frondShape.moveTo(0, 0);
@@ -2283,4 +2304,151 @@ export function createStarfish(colorHex: number): {
   }
 
   return { group, mat, armMeshes, baseRotations };
+}
+
+/** Where the Bioluminescent Grotto sits on the seabed (matches the basin in groundHeightAt). */
+export const GROTTO_CENTER = { x: -42, z: 30 };
+
+/** Shape of the rock ring, shared by the drawing code and the collision wall. */
+export const GROTTO_RING = {
+  radius: 17.5,
+  // Three wide openings, so the ring frames the basin without ever trapping a turtle.
+  gapAngles: [-0.75, 1.35, 3.45],
+  gapHalfWidth: 0.4,
+};
+
+/**
+ * Bioluminescent Grotto: a broken ring of dark basalt spires leaning in over the basin,
+ * two entrance arches, and glowing crystals and wall-lichen inside.
+ * Layout is deterministic so the collision spires always match what is drawn.
+ */
+export function createGrotto(groundAt: (x: number, z: number) => number): {
+  group: THREE.Group;
+  glowMaterials: THREE.MeshStandardMaterial[];
+} {
+  const group = new THREE.Group();
+
+  const rockMat = new THREE.MeshStandardMaterial({
+    color: 0x232b3d,
+    roughness: 0.92,
+    metalness: 0.04,
+    flatShading: true,
+  });
+  const glowPalette = [0x22d3ee, 0xa78bfa, 0x34d399, 0xf0abfc];
+  const glowMaterials = glowPalette.map(
+    (hex) =>
+      new THREE.MeshStandardMaterial({
+        color: 0x000000,
+        emissive: hex,
+        emissiveIntensity: 0.9,
+        roughness: 0.35,
+        fog: false,
+      })
+  );
+
+  const spireGeo = new THREE.IcosahedronGeometry(1, 1);
+  const lichenGeo = new THREE.SphereGeometry(0.16, 8, 6);
+  const crystalGeo = new THREE.ConeGeometry(0.22, 1, 5);
+
+  // Cheap repeatable pseudo-random, so the grotto looks the same every visit.
+  const rand = (n: number) => {
+    const v = Math.sin(n * 127.1 + 11.7) * 43758.5453;
+    return v - Math.floor(v);
+  };
+
+  const ringRadius = GROTTO_RING.radius;
+  const spireCount = 22;
+  const { gapAngles, gapHalfWidth } = GROTTO_RING;
+
+  for (let i = 0; i < spireCount; i++) {
+    const angle = (i / spireCount) * Math.PI * 2;
+    const inGap = gapAngles.some((g) => {
+      const d = Math.atan2(Math.sin(angle - g), Math.cos(angle - g));
+      return Math.abs(d) < gapHalfWidth;
+    });
+    if (inGap) continue;
+
+    const r = ringRadius + (rand(i) - 0.5) * 2.4;
+    const x = GROTTO_CENTER.x + Math.cos(angle) * r;
+    const z = GROTTO_CENTER.z + Math.sin(angle) * r;
+    const baseY = groundAt(x, z);
+    const width = 1.9 + rand(i + 40) * 1.3;
+    // Tall, but always capped below the waterline.
+    const height = Math.min(6.2 + rand(i + 80) * 2.6, -1.0 - baseY);
+    if (height < 2) continue;
+
+    const spire = new THREE.Mesh(spireGeo, rockMat);
+    spire.scale.set(width, height * 0.62, width * (0.8 + rand(i + 120) * 0.4));
+    spire.position.set(x, baseY + height * 0.42, z);
+    spire.rotation.y = rand(i + 160) * Math.PI;
+    // Lean the top in toward the middle of the basin.
+    const lean = 0.2 + rand(i + 200) * 0.14;
+    spire.rotation.z = Math.cos(angle) * lean;
+    spire.rotation.x = -Math.sin(angle) * lean;
+    spire.castShadow = true;
+    spire.receiveShadow = true;
+    group.add(spire);
+
+    // Glowing lichen dots on the inward face.
+    for (let k = 0; k < 5; k++) {
+      const dot = new THREE.Mesh(lichenGeo, glowMaterials[(i + k) % glowMaterials.length]);
+      const inward = width * 0.78;
+      const side = (rand(i * 7 + k) - 0.5) * width * 0.9;
+      dot.position.set(
+        x - Math.cos(angle) * inward - Math.sin(angle) * side,
+        baseY + 0.8 + rand(i * 13 + k) * height * 0.6,
+        z - Math.sin(angle) * inward + Math.cos(angle) * side
+      );
+      dot.scale.setScalar(0.7 + rand(i * 17 + k) * 1.1);
+      group.add(dot);
+    }
+  }
+
+  // Rock arches framing the two entrances.
+  const archGeo = new THREE.TorusGeometry(4.6, 1.0, 6, 14, Math.PI);
+  gapAngles.forEach((g) => {
+    const ax = GROTTO_CENTER.x + Math.cos(g) * ringRadius;
+    const az = GROTTO_CENTER.z + Math.sin(g) * ringRadius;
+    const arch = new THREE.Mesh(archGeo, rockMat);
+    arch.position.set(ax, groundAt(ax, az) - 0.4, az);
+    // The arch spans across the opening, so its plane faces along the ring radius.
+    arch.rotation.y = Math.PI / 2 - g;
+    arch.castShadow = true;
+    group.add(arch);
+  });
+
+  // Crystal clusters on the basin floor.
+  for (let c = 0; c < 26; c++) {
+    const angle = rand(c + 300) * Math.PI * 2;
+    const r = 2.5 + rand(c + 340) * 12;
+    const cx = GROTTO_CENTER.x + Math.cos(angle) * r;
+    const cz = GROTTO_CENTER.z + Math.sin(angle) * r;
+    const cy = groundAt(cx, cz);
+    const mat = glowMaterials[c % glowMaterials.length];
+    for (let k = 0; k < 3; k++) {
+      const crystal = new THREE.Mesh(crystalGeo, mat);
+      const h = 0.5 + rand(c * 5 + k) * 0.9;
+      crystal.scale.set(1, h, 1);
+      crystal.position.set(cx + (k - 1) * 0.26, cy + h * 0.45, cz + (rand(c * 9 + k) - 0.5) * 0.4);
+      crystal.rotation.z = (k - 1) * 0.32;
+      crystal.rotation.x = (rand(c * 3 + k) - 0.5) * 0.4;
+      group.add(crystal);
+    }
+  }
+
+  // Soft coloured light pooling on the floor.
+  const lightSpecs: [number, number, number][] = [
+    [-8, 4, 0x22d3ee],
+    [8, -6, 0xa78bfa],
+    [2, 10, 0x34d399],
+  ];
+  lightSpecs.forEach(([dx, dz, hex]) => {
+    const lx = GROTTO_CENTER.x + dx;
+    const lz = GROTTO_CENTER.z + dz;
+    const light = new THREE.PointLight(hex, 7, 16, 1.6);
+    light.position.set(lx, groundAt(lx, lz) + 3.2, lz);
+    group.add(light);
+  });
+
+  return { group, glowMaterials };
 }
