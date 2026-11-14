@@ -6,6 +6,10 @@ import {defineConfig} from 'vite';
 export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
+    build: {
+      // three.js alone is about 700 kB minified; the optional Firebase code is split out.
+      chunkSizeWarningLimit: 1100,
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

@@ -61,6 +61,38 @@ export const SOLID_OBSTACLES: ObstacleCollider[] = [
   { x: 33.6, z: -45.2, radius: 2.7, minY: -14.0, maxY: -2.0, name: 'Brigantine Stern Castle' },
 ];
 
+/** Rounded scenery a turtle should bump and glide over (coral boulders). Rebuilt with the world. */
+interface SoftObstacle {
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+}
+const SOFT_OBSTACLES: SoftObstacle[] = [];
+let palmCollidersAdded = false;
+
+/**
+ * Eases a turtle out of any coral boulder it is overlapping. The push follows the
+ * boulder's surface with an upward bias, so swimming into one lifts the turtle over it
+ * instead of stopping it dead or wedging it between two boulders.
+ */
+export function resolveSoftObstacles(pos: THREE.Vector3, turtleRadius: number, dt: number): void {
+  const ease = Math.min(1, dt * 10);
+  for (const obs of SOFT_OBSTACLES) {
+    const dx = pos.x - obs.x;
+    const dz = pos.z - obs.z;
+    const reach = obs.radius + turtleRadius;
+    if (Math.abs(dx) > reach || Math.abs(dz) > reach) continue;
+    const dy = pos.y - obs.y;
+    const dist = Math.hypot(dx, dy, dz);
+    if (dist >= reach || dist < 0.0001) continue;
+    const push = ((reach - dist) / dist) * ease;
+    pos.x += dx * push;
+    pos.z += dz * push;
+    pos.y += Math.max(dy, reach * 0.35) * push;
+  }
+}
+
 /**
  * The grotto's rock ring as one smooth wall. A turtle touching it is eased back to the
  * nearer side, so it slides along the rock to an opening instead of wedging between spires.
@@ -573,6 +605,16 @@ export function buildOceanWorld(
 
   palmConfigs.forEach((cfg) => {
     const gy = groundHeightAt(cfg.x, cfg.z);
+    if (gy > 0.2 && !palmCollidersAdded) {
+      SOLID_OBSTACLES.push({
+        x: cfg.x,
+        z: cfg.z,
+        radius: 0.45,
+        minY: gy - 0.5,
+        maxY: gy + cfg.h,
+        name: 'Palm Trunk',
+      });
+    }
     if (gy > 0.2) {
       const palm = createCoconutPalm(cfg.x, gy - 0.1, cfg.z, cfg.h, cfg.lean, cfg.dir, textures);
       scene.add(palm);
@@ -763,6 +805,8 @@ export function buildOceanWorld(
       );
   };
 
+  palmCollidersAdded = true;
+  SOFT_OBSTACLES.length = 0;
   const coralInstanced = new THREE.InstancedMesh(coralGeo, coralMaterial, coralCount);
   const coralPalette = [0xf43f5e, 0xfb923c, 0xa855f7, 0xec4899, 0x2dd4bf, 0xfacc15];
 
@@ -779,6 +823,7 @@ export function buildOceanWorld(
     _dummy.scale.set(s * 1.15, s * (0.65 + Math.random() * 0.7), s);
     _dummy.updateMatrix();
     coralInstanced.setMatrixAt(i, _dummy.matrix);
+    SOFT_OBSTACLES.push({ x: cx, y: _dummy.position.y, z: cz, radius: 0.75 * s * 0.8 });
 
     _color.setHex(coralPalette[i % coralPalette.length]);
     coralInstanced.setColorAt(i, _color);
