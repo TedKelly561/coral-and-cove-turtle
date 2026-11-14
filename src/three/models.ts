@@ -1906,20 +1906,40 @@ export function createClownfish(): {
   body.scale.set(0.55, 1.0, 1.45);
   group.add(body);
 
-  // 3 Distinct vertical white bands edged in black
-  [-0.12, 0.02, 0.16].forEach((zOff) => {
-    const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.165, 0.165, 0.045, 14), whiteStripeMat);
-    ring.scale.set(0.58, 1, 1.0);
-    ring.rotation.x = Math.PI / 2;
-    ring.position.set(0, 0, zOff);
-    group.add(ring);
-
-    const border = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.06, 14), blackTrimMat);
-    border.scale.set(0.59, 1, 1.0);
-    border.rotation.x = Math.PI / 2;
-    border.position.set(0, 0, zOff);
-    group.add(border);
+  // 3 white bands with thin black edges, each fitted to the body's girth at that point.
+  // (They used to be one fixed size, and the black ring was larger than the white one, so
+  // the white was hidden and the bands stuck out like collars.)
+  const bodyHalfLength = 0.16 * 1.45;
+  [-0.12, 0.02, 0.15].forEach((zOff) => {
+    const girth = 0.16 * Math.sqrt(1 - (zOff / bodyHalfLength) ** 2);
+    const addBand = (radius: number, thickness: number, z: number, mat: THREE.Material) => {
+      const band = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, thickness, 14), mat);
+      band.scale.set(0.57, 1, 1.0);
+      band.rotation.x = Math.PI / 2;
+      band.position.set(0, 0, z);
+      group.add(band);
+    };
+    addBand(girth + 0.008, 0.05, zOff, whiteStripeMat);
+    addBand(girth + 0.006, 0.012, zOff - 0.031, blackTrimMat);
+    addBand(girth + 0.006, 0.012, zOff + 0.031, blackTrimMat);
   });
+
+  // Eyes, dorsal fin and a pair of fluttering-size pectoral fins
+  [-1, 1].forEach((side) => {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), blackTrimMat);
+    eye.position.set(side * 0.062, 0.035, 0.175);
+    group.add(eye);
+
+    const pectoral = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), orangeMat);
+    pectoral.scale.set(0.12, 0.6, 0.9);
+    pectoral.position.set(side * 0.09, -0.05, 0.05);
+    pectoral.rotation.z = side * 0.7;
+    group.add(pectoral);
+  });
+  const dorsalFin = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 6), orangeMat);
+  dorsalFin.scale.set(0.1, 0.55, 1.5);
+  dorsalFin.position.set(0, 0.15, -0.02);
+  group.add(dorsalFin);
 
   // Soft paddle-like tail fin
   const tailMesh = new THREE.Mesh(new THREE.SphereGeometry(0.14, 10, 8), orangeMat);
