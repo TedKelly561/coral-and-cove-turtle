@@ -22,7 +22,15 @@ import {
 } from './data/oceanCatalog';
 import { OceanCanvas, OceanCanvasHandle } from './components/OceanCanvas';
 import { SanctuaryJournalModal } from './components/SanctuaryJournalModal';
+import { TouchControls } from './components/TouchControls';
 import { oceanAudio } from './audio/oceanAudio';
+import {
+  clearLocalSave,
+  hasProgress,
+  loadLocalSave,
+  LocalSave,
+  writeLocalSave,
+} from './services/localSave';
 
 function formatSolarTime(hours: number): string {
   const h = Math.floor(hours) % 24;
@@ -35,22 +43,47 @@ function formatSolarTime(hours: number): string {
 export default function App() {
   const oceanRef = useRef<OceanCanvasHandle | null>(null);
 
+  // Progress saved in this browser by an earlier visit, read once at start-up.
+  const [initialSave] = useState<LocalSave | null>(() => loadLocalSave());
+  const [hasSavedProgress, setHasSavedProgress] = useState<boolean>(() => hasProgress(initialSave));
+  const completionCelebrated = useRef<boolean>(initialSave?.completionCelebrated ?? false);
+  const [isTouchDevice, setIsTouchDevice] = useState<boolean>(
+    () => window.matchMedia('(pointer: coarse)').matches
+  );
+  const [showControlsHint, setShowControlsHint] = useState<boolean>(false);
+
   const [screenState, setScreenState] = useState<GameScreenState>('title');
   const [cameraMode, setCameraMode] = useState<CameraMode>('dynamic_coop');
-  const [dayTimeHours, setDayTimeHours] = useState<number>(10.5);
+  const [dayTimeHours, setDayTimeHours] = useState<number>(initialSave?.dayTimeHours ?? 10.5);
   const [autoCycleTime, setAutoCycleTime] = useState<boolean>(true);
-  const [weatherMood, setWeatherMood] = useState<WeatherMood>('sunlit_calm');
+  const [weatherMood, setWeatherMood] = useState<WeatherMood>(
+    initialSave?.weatherMood ?? 'sunlit_calm'
+  );
   const [babyFollowingMom, setBabyFollowingMom] = useState<boolean>(true);
   const [piggybackActive, setPiggybackActive] = useState<boolean>(false);
-  const [isDockCollapsed, setIsDockCollapsed] = useState<boolean>(false);
+  const [isDockCollapsed, setIsDockCollapsed] = useState<boolean>(true);
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [journalInitialTab, setJournalInitialTab] = useState<
     'collectibles' | 'wildlife' | 'chronicles' | 'settings' | 'drive'
   >('collectibles');
 
-  const [collectibles, setCollectibles] = useState<CollectibleItem[]>(INITIAL_COLLECTIBLES);
-  const [landmarks, setLandmarks] = useState<StoryLandmark[]>(INITIAL_LANDMARKS);
-  const [wildlife, setWildlife] = useState<WildlifeSighting[]>(INITIAL_WILDLIFE);
+  const [collectibles, setCollectibles] = useState<CollectibleItem[]>(() =>
+    INITIAL_COLLECTIBLES.map((c) => {
+      const saved = initialSave?.collectibles.find((entry) => entry.id === c.id);
+      return saved ? { ...c, discovered: true, discoveredBy: saved.by } : c;
+    })
+  );
+  const [landmarks, setLandmarks] = useState<StoryLandmark[]>(() =>
+    INITIAL_LANDMARKS.map((l) =>
+      initialSave?.landmarkIds.includes(l.id) ? { ...l, inspected: true } : l
+    )
+  );
+  const [wildlife, setWildlife] = useState<WildlifeSighting[]>(() =>
+    INITIAL_WILDLIFE.map((w) => {
+      const saved = initialSave?.wildlife.find((entry) => entry.id === w.id);
+      return saved ? { ...w, discovered: true, befriended: saved.befriended } : w;
+    })
+  );
 
   const [controllers, setControllers] = useState<ControllerStatus>({
     p1Connected: false,
@@ -73,16 +106,16 @@ export default function App() {
     wildlifeMet: 0,
     totalWildlife: INITIAL_WILDLIFE.length,
     friendsMade: 0,
-    seaweedEaten: 0,
+    seaweedEaten: initialSave?.seaweedEaten ?? 0,
     currentZone: 'Sunlit Coral Gardens',
     momDepth: 2.8,
     babyDepth: 2.5,
     distanceBetween: 4.3,
     babyFollowingMom: true,
     piggybackActive: false,
-    dayTimeHours: 10.5,
+    dayTimeHours: initialSave?.dayTimeHours ?? 10.5,
     autoCycleTime: true,
-    weatherMood: 'sunlit_calm',
+    weatherMood: initialSave?.weatherMood ?? 'sunlit_calm',
     inGentleCurrent: false,
     activeWildlifeReaction: null,
     recentDiscovery: null,
@@ -239,7 +272,102 @@ export default function App() {
   const handleStartGame = () => {
     oceanAudio.init();
     setScreenState('playing');
+    setShowControlsHint(true);
   };
+
+  const handleStartFresh = () => {
+    clearLocalSave();
+    completionCelebrated.current = false;
+    setHasSavedProgress(false);
+    setCollectibles(INITIAL_COLLECTIBLES);
+    setLandmarks(INITIAL_LANDMARKS);
+    setWildlife(INITIAL_WILDLIFE);
+    setHud((prev) => ({ ...prev, seaweedEaten: 0 }));
+    oceanRef.current?.setPositions([-2.5, -2.8, 4], [1.8, -2.5, 5.2]);
+    handleStartGame();
+  };
+
+  // Put the turtles back where the last visit left them.
+  useEffect(() => {
+    if (initialSave?.momPosition && initialSave.babyPosition) {
+      oceanRef.current?.setPositions(initialSave.momPosition, initialSave.babyPosition);
+    }
+  }, [initialSave]);
+
+  // A finger on the screen switches the on-screen sticks on, even on a laptop with touch.
+  useEffect(() => {
+    const onFirstTouch = () => setIsTouchDevice(true);
+    window.addEventListener('touchstart', onFirstTouch, { once: true, passive: true });
+    return () => window.removeEventListener('touchstart', onFirstTouch);
+  }, []);
+
+  useEffect(() => {
+    if (!showControlsHint) return;
+    const timer = window.setTimeout(() => setShowControlsHint(false), 9000);
+    return () => window.clearTimeout(timer);
+  }, [showControlsHint]);
+
+  // Autosave: whenever progress changes, every 10 seconds while playing (for position),
+  // and when the tab is hidden or closed.
+  const saveSnapshot = useRef<() => void>(() => {});
+  saveSnapshot.current = () => {
+    const positions = oceanRef.current?.getPositions();
+    writeLocalSave({
+      version: 1,
+      savedAt: new Date().toISOString(),
+      collectibles: collectibles
+        .filter((c) => c.discovered)
+        .map((c) => ({ id: c.id, by: c.discoveredBy })),
+      landmarkIds: landmarks.filter((l) => l.inspected).map((l) => l.id),
+      wildlife: wildlife
+        .filter((w) => w.discovered)
+        .map((w) => ({ id: w.id, befriended: Boolean(w.befriended) })),
+      seaweedEaten: hud.seaweedEaten,
+      dayTimeHours: hud.dayTimeHours,
+      weatherMood,
+      momPosition: positions?.mom,
+      babyPosition: positions?.baby,
+      completionCelebrated: completionCelebrated.current,
+    });
+  };
+
+  useEffect(() => {
+    if (screenState === 'title') return;
+    saveSnapshot.current();
+  }, [collectibles, landmarks, wildlife, hud.seaweedEaten, weatherMood, screenState]);
+
+  useEffect(() => {
+    if (screenState === 'title') return;
+    const interval = window.setInterval(() => saveSnapshot.current(), 10000);
+    const onHide = () => {
+      if (document.visibilityState === 'hidden') saveSnapshot.current();
+    };
+    document.addEventListener('visibilitychange', onHide);
+    window.addEventListener('pagehide', onHide);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onHide);
+      window.removeEventListener('pagehide', onHide);
+    };
+  }, [screenState]);
+
+  // One-time celebration when every treasure, landmark and friend has been found.
+  const sanctuaryComplete =
+    collectibles.every((c) => c.discovered) &&
+    landmarks.every((l) => l.inspected) &&
+    wildlife.every((w) => w.befriended);
+
+  useEffect(() => {
+    if (!sanctuaryComplete || completionCelebrated.current || screenState !== 'playing') return;
+    // Let the last discovery banner be read before the celebration takes over.
+    const timer = window.setTimeout(() => {
+      completionCelebrated.current = true;
+      oceanAudio.playFriendshipChime();
+      setScreenState('victory');
+      saveSnapshot.current();
+    }, 2600);
+    return () => window.clearTimeout(timer);
+  }, [sanctuaryComplete, screenState]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -248,6 +376,7 @@ export default function App() {
         e.preventDefault();
         oceanAudio.init();
         setScreenState('playing');
+        setShowControlsHint(true);
       } else if (screenState === 'playing' && e.code === 'KeyH') {
         setIsDockCollapsed((prev) => !prev);
       } else if (screenState === 'playing' && e.code === 'KeyJ') {
@@ -453,8 +582,22 @@ export default function App() {
                 onClick={handleStartGame}
                 className="px-8 py-3.5 text-sm font-semibold text-slate-950 bg-teal-400 hover:bg-teal-300 rounded-xl shadow-lg transition-transform active:scale-95 cursor-pointer"
               >
-                Dive Into the Sanctuary (Enter / Space)
+                {hasSavedProgress
+                  ? 'Continue Your Odyssey (Enter / Space)'
+                  : 'Dive Into the Sanctuary (Enter / Space)'}
               </button>
+              {hasSavedProgress && (
+                <button
+                  onClick={() => {
+                    if (window.confirm('Start a new odyssey? Your saved discoveries will be erased.')) {
+                      handleStartFresh();
+                    }
+                  }}
+                  className="px-5 py-3.5 text-sm font-medium text-slate-200 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 rounded-xl cursor-pointer"
+                >
+                  Start Fresh
+                </button>
+              )}
               <button
                 onClick={() => {
                   oceanAudio.init();
@@ -837,6 +980,55 @@ export default function App() {
       {/* =====================================================================
           3. SANCTUARY COMPENDIUM, WEATHER SETTINGS & GOOGLE DRIVE CLOUD MODAL
          ===================================================================== */}
+      {screenState === 'playing' && isTouchDevice && (
+        <TouchControls
+          onSteer={(who, turn, forward) => oceanRef.current?.setTouchSteer(who, turn, forward)}
+          onVertical={(who, dir) => oceanRef.current?.setTouchVertical(who, dir)}
+          onSing={(who) => oceanRef.current?.triggerTurtleSong(who)}
+          onRoll={(who) => oceanRef.current?.triggerBarrelRoll(who)}
+          onMunch={() => oceanRef.current?.triggerMunchSeaweed()}
+        />
+      )}
+
+      {screenState === 'playing' && showControlsHint && (
+        <div className="absolute top-28 inset-x-0 z-20 flex justify-center pointer-events-none px-4">
+          <div className="px-4 py-2 rounded-xl bg-slate-950/90 border border-teal-400/40 text-sm text-teal-100 shadow-xl text-center">
+            {isTouchDevice
+              ? 'Left stick swims Mom · right stick swims Baby (leave it and she follows) · tap a treasure to collect it'
+              : 'W A S D swims Mom · arrow keys swim Baby · Space up, C down · press H for all controls'}
+          </div>
+        </div>
+      )}
+
+      {screenState === 'victory' && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Sanctuary complete"
+          className="absolute inset-0 z-40 flex items-center justify-center p-6 bg-slate-950/70"
+        >
+          <div className="max-w-lg w-full text-center px-8 py-9 rounded-3xl bg-slate-950/95 border border-teal-400/50 shadow-2xl space-y-4">
+            <p className="text-xs font-semibold tracking-widest uppercase text-teal-300">
+              Sanctuary Complete
+            </p>
+            <h2 className="text-3xl font-display font-semibold text-white">
+              Kaimana &amp; Lani found everything!
+            </h2>
+            <p className="text-sm text-slate-300 leading-relaxed">
+              All {collectibles.length} treasures collected, all {landmarks.length} landmarks
+              visited and all {wildlife.length} ocean friends made, with {hud.seaweedEaten} seaweed
+              snacks along the way. The whole reef is singing for you.
+            </p>
+            <button
+              onClick={() => setScreenState('playing')}
+              className="px-7 py-3 text-sm font-semibold text-slate-950 bg-teal-400 hover:bg-teal-300 rounded-xl cursor-pointer"
+            >
+              Keep Exploring
+            </button>
+          </div>
+        </div>
+      )}
+
       <SanctuaryJournalModal
         isOpen={screenState === 'paused'}
         activeInitialTab={journalInitialTab}

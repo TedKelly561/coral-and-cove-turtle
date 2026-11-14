@@ -1,21 +1,63 @@
-import { initializeApp, getApps } from 'firebase/app';
-import {
-  getAuth,
-  signInWithPopup,
-  GoogleAuthProvider,
-  onAuthStateChanged,
-  User,
-} from 'firebase/auth';
-import firebaseConfig from '../../firebase-applet-config.json';
+import type { FirebaseOptions } from 'firebase/app';
+import type { Auth, User } from 'firebase/auth';
 import { DriveFileEntry, SavedOceanJournal } from '../types/game';
 
 export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-const auth = getAuth(app);
+// Firebase settings are never committed. They come from either:
+//   1. firebase-applet-config.json at the project root (git-ignored; AI Studio generates it), or
+//   2. VITE_FIREBASE_* variables in .env.local (see .env.example).
+const localConfigFiles = import.meta.glob<FirebaseOptions>('../../firebase-applet-config.json', {
+  eager: true,
+  import: 'default',
+});
 
-const provider = new GoogleAuthProvider();
-SCOPES.forEach((scope) => provider.addScope(scope));
+const loadFirebaseConfig = (): FirebaseOptions | null => {
+  const fromFile = Object.values(localConfigFiles)[0];
+  if (fromFile?.apiKey) return fromFile;
+
+  const env = import.meta.env;
+  if (!env.VITE_FIREBASE_API_KEY) return null;
+  return {
+    apiKey: env.VITE_FIREBASE_API_KEY,
+    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN,
+    projectId: env.VITE_FIREBASE_PROJECT_ID,
+    appId: env.VITE_FIREBASE_APP_ID,
+    storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET,
+    messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  };
+};
+
+const firebaseConfig = loadFirebaseConfig();
+
+/** False when no Firebase settings are present; the game still runs, Drive saves are off. */
+export const isDriveConfigured = firebaseConfig !== null;
+
+export const DRIVE_NOT_CONFIGURED_MESSAGE =
+  'Google Drive saves are not set up for this copy of the game. Add your Firebase settings to .env.local (see .env.example).';
+
+// Firebase is a large library and only the optional Drive feature needs it, so it is
+// fetched on demand (and never, when no settings are present).
+type FirebaseAuthModule = typeof import('firebase/auth');
+let authLoader: Promise<{ auth: Auth; authModule: FirebaseAuthModule }> | null = null;
+let loadedAuth: Auth | null = null;
+
+const loadAuth = () => {
+  if (!firebaseConfig) return Promise.reject(new Error(DRIVE_NOT_CONFIGURED_MESSAGE));
+  if (!authLoader) {
+    authLoader = Promise.all([import('firebase/app'), import('firebase/auth')]).then(
+      ([appModule, authModule]) => {
+        const app =
+          appModule.getApps().length === 0
+            ? appModule.initializeApp(firebaseConfig)
+            : appModule.getApps()[0];
+        loadedAuth = authModule.getAuth(app);
+        return { auth: loadedAuth, authModule };
+      }
+    );
+  }
+  return authLoader;
+};
 
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
@@ -24,26 +66,41 @@ export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
-  return onAuthStateChanged(auth, async (user: User | null) => {
-    if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        cachedAccessToken = null;
-        if (onAuthFailure) onAuthFailure();
-      }
-    } else {
-      cachedAccessToken = null;
-      if (onAuthFailure) onAuthFailure();
-    }
-  });
+  if (!firebaseConfig) {
+    if (onAuthFailure) onAuthFailure();
+    return () => {};
+  }
+  let cancelled = false;
+  let unsubscribe = () => {};
+  loadAuth()
+    .then(({ auth, authModule }) => {
+      if (cancelled) return;
+      unsubscribe = authModule.onAuthStateChanged(auth, (user: User | null) => {
+        if (user && cachedAccessToken) {
+          if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+        } else if (!user || !isSigningIn) {
+          cachedAccessToken = null;
+          if (onAuthFailure) onAuthFailure();
+        }
+      });
+    })
+    .catch(() => {
+      if (!cancelled && onAuthFailure) onAuthFailure();
+    });
+  return () => {
+    cancelled = true;
+    unsubscribe();
+  };
 };
 
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
+  const { auth, authModule } = await loadAuth();
   try {
     isSigningIn = true;
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
+    const provider = new authModule.GoogleAuthProvider();
+    SCOPES.forEach((scope) => provider.addScope(scope));
+    const result = await authModule.signInWithPopup(auth, provider);
+    const credential = authModule.GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
       throw new Error('Failed to get access token from Firebase Auth');
     }
@@ -63,7 +120,7 @@ export const getAccessToken = async (): Promise<string | null> => {
 };
 
 export const logout = async () => {
-  await auth.signOut();
+  await loadedAuth?.signOut();
   cachedAccessToken = null;
 };
 

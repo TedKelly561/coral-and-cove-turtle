@@ -1,0 +1,15 @@
+{
+  "name": "Coral & Cove: A Sea Turtle Odyssey",
+  "short_name": "Coral & Cove",
+  "description": "A tranquil two-player ocean exploration game with a mother sea turtle and her hatchling.",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#020617",
+  "theme_color": "#0c4a6e",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

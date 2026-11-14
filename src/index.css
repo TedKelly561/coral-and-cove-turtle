@@ -105,3 +105,11 @@
   background-color: #f8fafc;
   box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.25);
 }
+
+/* Tablets and phones: no pull-to-refresh, no page scroll, no long-press menus over the game. */
+html,
+body {
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+}

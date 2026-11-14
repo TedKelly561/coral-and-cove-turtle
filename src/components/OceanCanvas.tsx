@@ -25,6 +25,8 @@ import {
   getZoneNameAt,
   groundHeightAt,
   resolveSolidObstacles,
+  resolveSoftObstacles,
+  grottoDepthFactor,
   sampleFootprintGround,
 } from '../three/world';
 import { TurtleBubbleTrailSystem } from '../three/bubbleTrail';
@@ -37,6 +39,18 @@ const _vec3C = new THREE.Vector3();
 const _currentVec = new THREE.Vector3();
 const _skyColor = new THREE.Color();
 const _underwaterFogColor = new THREE.Color();
+const _grottoFogColor = new THREE.Color(0x070b24);
+
+// Fixed palette colours used every frame, created once instead of ~20 times per frame.
+const _colorCache = new Map<number, THREE.Color>();
+const cachedColor = (hex: number): THREE.Color => {
+  let color = _colorCache.get(hex);
+  if (!color) {
+    color = new THREE.Color(hex);
+    _colorCache.set(hex, color);
+  }
+  return color;
+};
 const _sunColor = new THREE.Color();
 const _hemiSkyColor = new THREE.Color();
 const _hemiGroundColor = new THREE.Color();
@@ -50,6 +64,8 @@ export interface OceanCanvasHandle {
   triggerMunchSeaweed: () => void;
   setExternalVertical: (dir: number) => void;
   teleportToZone: (x: number, y: number, z: number) => void;
+  setTouchSteer: (who: 'mom' | 'baby', turn: number, forward: number) => void;
+  setTouchVertical: (who: 'mom' | 'baby', dir: number) => void;
   getPositions: () => { mom: [number, number, number]; baby: [number, number, number] };
   setPositions: (mom: [number, number, number], baby: [number, number, number]) => void;
 }
@@ -94,6 +110,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     momMunchTimer: number;
     babyMunchTimer: number;
     externalVerticalDir: number;
+    touch: Record<'mom' | 'baby', { turn: number; forward: number; vertical: number }>;
     collectibleObjs: CollectibleObject3D[];
     requestMunch: boolean;
   }>({
@@ -109,6 +126,10 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     momMunchTimer: 0,
     babyMunchTimer: 0,
     externalVerticalDir: 0,
+    touch: {
+      mom: { turn: 0, forward: 0, vertical: 0 },
+      baby: { turn: 0, forward: 0, vertical: 0 },
+    },
     collectibleObjs: [],
     requestMunch: false,
   });
@@ -143,6 +164,13 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     },
     triggerMunchSeaweed: () => {
       simRef.current.requestMunch = true;
+    },
+    setTouchSteer: (who: 'mom' | 'baby', turn: number, forward: number) => {
+      simRef.current.touch[who].turn = turn;
+      simRef.current.touch[who].forward = forward;
+    },
+    setTouchVertical: (who: 'mom' | 'baby', dir: number) => {
+      simRef.current.touch[who].vertical = dir;
     },
     setExternalVertical: (dir: number) => {
       simRef.current.externalVerticalDir = dir;
@@ -196,7 +224,11 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.12;
-    renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, 2));
+    // Phones and tablets have dense screens and modest GPUs: render fewer pixels there.
+    const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+    renderer.setPixelRatio(
+      isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, isTouchDevice ? 1.5 : 2)
+    );
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -383,6 +415,11 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
       heldKeys.clear();
       justPressedKeys.clear();
       simRef.current.externalVerticalDir = 0;
+      (['mom', 'baby'] as const).forEach((who) => {
+        simRef.current.touch[who].turn = 0;
+        simRef.current.touch[who].forward = 0;
+        simRef.current.touch[who].vertical = 0;
+      });
     };
 
     const onResize = () => {
@@ -429,6 +466,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     // 7. Software-WebGL Safe Pacing Loop
     let frameId = 0;
     let isDisposed = false;
+    let camHeldUnderwater = false;
     const clock = new THREE.Clock();
 
     function afterDraw(cb: () => void) {
@@ -484,33 +522,47 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
       const isRainWeather = currentProps.weatherMood === 'gentle_rain';
       const isMistWeather = currentProps.weatherMood === 'misty_morning';
 
-      _sunColor.setHex(0xfffbeb).lerp(new THREE.Color(0xfb923c), goldenHourFactor * 0.75);
+      _sunColor.setHex(0xfffbeb).lerp(cachedColor(0xfb923c), goldenHourFactor * 0.75);
       if (isRainWeather) {
-        _sunColor.lerp(new THREE.Color(0xbae6fd), 0.55);
+        _sunColor.lerp(cachedColor(0xbae6fd), 0.55);
       } else if (isMistWeather) {
-        _sunColor.lerp(new THREE.Color(0xfde68a), 0.42);
+        _sunColor.lerp(cachedColor(0xfde68a), 0.42);
       }
       if (nightFactor > 0.5) {
-        _sunColor.lerp(new THREE.Color(0x38bdf8), (nightFactor - 0.5) * 2);
+        _sunColor.lerp(cachedColor(0x38bdf8), (nightFactor - 0.5) * 2);
       }
       sunKeyLight.color.copy(_sunColor);
       const baseSunIntensity = THREE.MathUtils.lerp(0.85, 2.55, dayFactor);
-      sunKeyLight.intensity = isRainWeather
-        ? baseSunIntensity * 0.62
-        : isMistWeather
-          ? baseSunIntensity * 0.78
-          : baseSunIntensity;
+      // Twilight inside the Bioluminescent Grotto: daylight falls away so the glow can read.
+      const grottoFactor = grottoDepthFactor(
+        simRef.current.momPos.x,
+        simRef.current.momPos.y,
+        simRef.current.momPos.z
+      );
+      sunKeyLight.intensity =
+        (isRainWeather
+          ? baseSunIntensity * 0.62
+          : isMistWeather
+            ? baseSunIntensity * 0.78
+            : baseSunIntensity) *
+        (1 - grottoFactor * 0.94);
+      hemiLight.intensity = 1.35 * (1 - grottoFactor * 0.86);
+      rimLight.intensity = 0.75 * (1 - grottoFactor * 0.8);
+      // The studio reflection map is a constant fill light. Left alone it keeps the
+      // whole world daylight-bright at night and inside the grotto.
+      scene.environmentIntensity =
+        THREE.MathUtils.lerp(0.35, 1.0, dayFactor) * (1 - grottoFactor * 0.85);
 
       _hemiSkyColor
         .setHex(0x0f172a)
-        .lerp(new THREE.Color(0x7dd3fc), dayFactor)
-        .lerp(new THREE.Color(0xfda4af), goldenHourFactor * 0.45);
+        .lerp(cachedColor(0x7dd3fc), dayFactor)
+        .lerp(cachedColor(0xfda4af), goldenHourFactor * 0.45);
       if (isRainWeather) {
-        _hemiSkyColor.lerp(new THREE.Color(0x64748b), 0.55 * dayFactor);
+        _hemiSkyColor.lerp(cachedColor(0x64748b), 0.55 * dayFactor);
       } else if (isMistWeather) {
-        _hemiSkyColor.lerp(new THREE.Color(0xe2e8f0), 0.6 * dayFactor);
+        _hemiSkyColor.lerp(cachedColor(0xe2e8f0), 0.6 * dayFactor);
       }
-      _hemiGroundColor.setHex(0x042f2e).lerp(new THREE.Color(0x0d9488), dayFactor);
+      _hemiGroundColor.setHex(0x042f2e).lerp(cachedColor(0x0d9488), dayFactor);
       hemiLight.color.copy(_hemiSkyColor);
       hemiLight.groundColor.copy(_hemiGroundColor);
 
@@ -550,6 +602,11 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         let p1BarrelRoll = false;
         let p1Munch = simRef.current.requestMunch;
         simRef.current.requestMunch = false;
+
+        // On-screen joystick (touch devices)
+        p1Turn -= simRef.current.touch.mom.turn;
+        p1Forward += simRef.current.touch.mom.forward;
+        p1Vertical += simRef.current.touch.mom.vertical;
 
         if (heldKeys.has('KeyA')) p1Turn += 1;
         if (heldKeys.has('KeyD')) p1Turn -= 1;
@@ -639,13 +696,29 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
 
         // Strict 5-Point Sand Collision for Mother Turtle
         const momFootprint = sampleFootprintGround(momPos.x, momPos.z, momHeading, 1.5, 1.3);
-        const momMaxY = momFootprint.maxGroundY > 0 ? momFootprint.maxGroundY + 0.36 : 0.25;
-        momPos.y = THREE.MathUtils.clamp(momPos.y, momFootprint.maxGroundY + 0.48, momMaxY);
+        // On the beach she rests her belly on the sand and tilts with the slope,
+        // instead of hovering above the highest point under her.
+        const momLandT = THREE.MathUtils.smoothstep(momFootprint.maxGroundY, -0.2, 0.4);
+        const momMinY = THREE.MathUtils.lerp(
+          momFootprint.maxGroundY + 0.48,
+          momFootprint.restGroundY + 0.36,
+          momLandT
+        );
+        const momMaxY = momFootprint.maxGroundY > 0 ? momMinY : 0.25;
+        momPos.y = THREE.MathUtils.clamp(momPos.y, momMinY, Math.max(momMinY, momMaxY));
+        if (momLandT > 0) {
+          const slopePitch = -Math.atan2(
+            momFootprint.noseGroundY - momFootprint.tailGroundY,
+            3.0
+          );
+          momPitch = THREE.MathUtils.lerp(momPitch, slopePitch, momLandT * (1 - Math.exp(-8 * dt)));
+        }
         momPos.x = THREE.MathUtils.clamp(momPos.x, -85, 85);
         momPos.z = THREE.MathUtils.clamp(momPos.z, -85, 85);
 
         // Impassable Solid Obstacles (Shipwrecks & Coconut Cove Lighthouse)
         resolveSolidObstacles(momPos, 1.25);
+        resolveSoftObstacles(momPos, 0.8, dt);
 
         // --- PLAYER 2: BABY TURTLE ("LANI") INPUT & COMPANION FOLLOW ---
         let p2Turn = 0;
@@ -653,6 +726,10 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         let p2Vertical = simRef.current.externalVerticalDir;
         let p2Sing = false;
         let p2BarrelRoll = false;
+
+        p2Turn -= simRef.current.touch.baby.turn;
+        p2Forward += simRef.current.touch.baby.forward;
+        p2Vertical += simRef.current.touch.baby.vertical;
 
         if (heldKeys.has('ArrowLeft')) p2Turn += 1;
         if (heldKeys.has('ArrowRight')) p2Turn -= 1;
@@ -757,7 +834,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         } else if (currentProps.babyFollowingMom && !p2HasManualInput && !isSinglePlayerBaby) {
           // In Mom-lead mode, Baby glides gently toward Mom without creating any pull or drag on Mom
           _vec3A
-            .set(2.35, 0.25, -1.1)
+            .set(3.1, 0.25, -1.4)
             .applyAxisAngle(_vec3B.set(0, 1, 0), momHeading)
             .add(momPos);
           const distToSlot = babyPos.distanceTo(_vec3A);
@@ -803,14 +880,53 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
 
         // Strict 5-Point Sand Collision for Baby Turtle
         const babyFootprint = sampleFootprintGround(babyPos.x, babyPos.z, babyHeading, 0.9, 0.8);
-        const babyMaxY =
-          babyFootprint.maxGroundY > 0 ? babyFootprint.maxGroundY + 0.28 : 0.22;
-        babyPos.y = THREE.MathUtils.clamp(babyPos.y, babyFootprint.maxGroundY + 0.36, babyMaxY);
+        const babyLandT = THREE.MathUtils.smoothstep(babyFootprint.maxGroundY, -0.2, 0.4);
+        const babyMinY = THREE.MathUtils.lerp(
+          babyFootprint.maxGroundY + 0.36,
+          babyFootprint.restGroundY + 0.2,
+          babyLandT
+        );
+        const babyMaxY = babyFootprint.maxGroundY > 0 ? babyMinY : 0.22;
+        if (!currentProps.piggybackActive) {
+          babyPos.y = THREE.MathUtils.clamp(babyPos.y, babyMinY, Math.max(babyMinY, babyMaxY));
+          if (babyLandT > 0) {
+            const slopePitch = -Math.atan2(
+              babyFootprint.noseGroundY - babyFootprint.tailGroundY,
+              1.8
+            );
+            babyPitch = THREE.MathUtils.lerp(
+              babyPitch,
+              slopePitch,
+              babyLandT * (1 - Math.exp(-8 * dt))
+            );
+          }
+        } else {
+          babyPos.y = Math.max(babyPos.y, babyMinY);
+        }
         babyPos.x = THREE.MathUtils.clamp(babyPos.x, -85, 85);
         babyPos.z = THREE.MathUtils.clamp(babyPos.z, -85, 85);
 
         // Impassable Solid Obstacles (Shipwrecks & Coconut Cove Lighthouse)
         resolveSolidObstacles(babyPos, 0.65);
+        if (!currentProps.piggybackActive) resolveSoftObstacles(babyPos, 0.45, dt);
+
+        // Keep the two shells from passing through each other. Baby gives way,
+        // except while riding on Mom's back, where touching is the point.
+        if (!currentProps.piggybackActive) {
+          const sepX = babyPos.x - momPos.x;
+          const sepZ = babyPos.z - momPos.z;
+          const sepY = babyPos.y - momPos.y;
+          const flatDist = Math.hypot(sepX, sepZ);
+          const minFlatDist = 2.5;
+          if (flatDist < minFlatDist && Math.abs(sepY) < 1.1) {
+            // Directly on top of each other: slide out to Mom's side.
+            const nx = flatDist > 0.001 ? sepX / flatDist : Math.cos(momHeading);
+            const nz = flatDist > 0.001 ? sepZ / flatDist : -Math.sin(momHeading);
+            const push = (minFlatDist - flatDist) * Math.min(1, dt * 9);
+            babyPos.x += nx * push;
+            babyPos.z += nz * push;
+          }
+        }
 
         // --- SEAWEED GRAZING / MUNCHING INTERACTION ---
         worldRig.edibleSeaweedPatches.forEach((patch) => {
@@ -1285,31 +1401,47 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         mainCamera.lookAt(camLookTarget);
       }
 
+      // While the turtle in focus is properly submerged, hold the camera under the surface
+      // too, so the view does not flip between the sky look and the underwater look.
+      const camFocusY =
+        currentProps.cameraMode === 'follow_baby' || isSinglePlayerBaby ? babyPos.y : momPos.y;
+      if (camFocusY < -1.2) camHeldUnderwater = true;
+      else if (camFocusY > -0.6) camHeldUnderwater = false;
+      if (camHeldUnderwater && mainCamera.position.y > -0.55) {
+        const camFloorY = groundHeightAt(mainCamera.position.x, mainCamera.position.z) + 0.5;
+        if (camFloorY < -0.55) {
+          mainCamera.position.y = -0.55;
+          mainCamera.lookAt(camLookTarget);
+        }
+      }
+
       const isCamUnderwater = mainCamera.position.y < 0.05;
       oceanAudio.setCameraUnderwater(isCamUnderwater);
 
       if (isCamUnderwater) {
         _underwaterFogColor
           .setHex(0x041e2e)
-          .lerp(new THREE.Color(0x0d7490), dayFactor)
-          .lerp(new THREE.Color(0x0e7490), goldenHourFactor * 0.35);
+          .lerp(cachedColor(0x0d7490), dayFactor)
+          .lerp(cachedColor(0x0e7490), goldenHourFactor * 0.35);
         if (isRainWeather) {
-          _underwaterFogColor.lerp(new THREE.Color(0x0b4f63), 0.45);
+          _underwaterFogColor.lerp(cachedColor(0x0b4f63), 0.45);
         } else if (isMistWeather) {
-          _underwaterFogColor.lerp(new THREE.Color(0x158096), 0.35);
+          _underwaterFogColor.lerp(cachedColor(0x158096), 0.35);
         }
+        _underwaterFogColor.lerp(_grottoFogColor, grottoFactor * 0.88);
         (scene.background as THREE.Color).copy(_underwaterFogColor);
         sceneFog.color.copy(_underwaterFogColor);
-        sceneFog.density = isRainWeather ? 0.019 : isMistWeather ? 0.021 : 0.016;
+        sceneFog.density =
+          (isRainWeather ? 0.019 : isMistWeather ? 0.021 : 0.016) + grottoFactor * 0.012;
       } else {
         _skyColor
           .setHex(0x091526)
-          .lerp(new THREE.Color(0x7dd3fc), dayFactor)
-          .lerp(new THREE.Color(0xfdba74), goldenHourFactor * 0.65);
+          .lerp(cachedColor(0x7dd3fc), dayFactor)
+          .lerp(cachedColor(0xfdba74), goldenHourFactor * 0.65);
         if (isRainWeather) {
-          _skyColor.lerp(new THREE.Color(0x475569), 0.65 * dayFactor);
+          _skyColor.lerp(cachedColor(0x475569), 0.65 * dayFactor);
         } else if (isMistWeather) {
-          _skyColor.lerp(new THREE.Color(0xcbd5e1), 0.72 * dayFactor);
+          _skyColor.lerp(cachedColor(0xcbd5e1), 0.72 * dayFactor);
         }
         (scene.background as THREE.Color).copy(_skyColor);
         sceneFog.color.copy(_skyColor);
