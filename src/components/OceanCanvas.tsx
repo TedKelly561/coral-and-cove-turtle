@@ -217,6 +217,12 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
       return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
     })();
 
+    // Light graphics mode for phones, tablets and software rendering: no real-time
+    // shadows, no see-through "glass" materials (each costs an extra pass over the whole
+    // scene), fewer lights and a lower starting resolution.
+    const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
+    const lightGraphics = isSoftwareGl || isTouchDevice;
+
     const renderer = new THREE.WebGLRenderer({
       antialias: !isSoftwareGl,
       powerPreference: 'high-performance',
@@ -224,13 +230,14 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.12;
-    // Phones and tablets have dense screens and modest GPUs: render fewer pixels there.
-    const isTouchDevice = window.matchMedia('(pointer: coarse)').matches;
-    renderer.setPixelRatio(
-      isSoftwareGl ? 1 : Math.min(window.devicePixelRatio, isTouchDevice ? 1.5 : 2)
-    );
+    // Resolution adapts while playing (see the frame-rate check in the loop).
+    const minPixelRatio = isTouchDevice ? 0.7 : 1;
+    let pixelRatio = isSoftwareGl
+      ? 1
+      : Math.min(window.devicePixelRatio, isTouchDevice ? 1.25 : 2);
+    renderer.setPixelRatio(pixelRatio);
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.shadowMap.enabled = !isSoftwareGl;
+    renderer.shadowMap.enabled = !lightGraphics;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     mount.innerHTML = '';
@@ -270,7 +277,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     // 3. Balanced Studio & Solar Lighting Rig
     const sunKeyLight = new THREE.DirectionalLight(0xfff4d6, 2.4);
     sunKeyLight.position.set(35, 65, 25);
-    sunKeyLight.castShadow = !isSoftwareGl;
+    sunKeyLight.castShadow = !lightGraphics;
     const d = 55;
     sunKeyLight.shadow.camera.left = -d;
     sunKeyLight.shadow.camera.right = d;
@@ -299,14 +306,14 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
 
     // 4. Procedural Textures, Ocean World, Turtles, Collectibles & Hydrodynamic Bubble Trail System
     const textures = createProceduralTextures(renderer);
-    const worldRig = buildOceanWorld(scene, textures);
+    const worldRig = buildOceanWorld(scene, textures, lightGraphics);
 
     const momTurtle = createSeaTurtle(true, textures);
     const babyTurtle = createSeaTurtle(false, textures);
     scene.add(momTurtle.group, babyTurtle.group);
 
     // Dedicated Hydrodynamic Flipper-Tip Bubble Trail & Vortex Particle System
-    const bubbleTrailSystem = new TurtleBubbleTrailSystem(scene, isSoftwareGl);
+    const bubbleTrailSystem = new TurtleBubbleTrailSystem(scene, lightGraphics);
 
     // Collectible 3D Models
     const collectibleObjs: CollectibleObject3D[] = propsRef.current.collectibles.map((item) => {
@@ -328,6 +335,22 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     simRef.current.scene = scene;
     simRef.current.mainCamera = mainCamera;
     simRef.current.collectibleObjs = collectibleObjs;
+
+    if (lightGraphics) {
+      scene.traverse((obj) => {
+        const mesh = obj as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        materials.forEach((mat) => {
+          const physical = mat as THREE.MeshPhysicalMaterial;
+          if (physical.isMeshPhysicalMaterial && physical.transmission > 0) {
+            physical.transmission = 0;
+            physical.transparent = true;
+            physical.opacity = Math.min(physical.opacity, 0.7);
+          }
+        });
+      });
+    }
 
     if (!isSoftwareGl) {
       renderer.compile(scene, mainCamera);
@@ -467,6 +490,9 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     let frameId = 0;
     let isDisposed = false;
     let camHeldUnderwater = false;
+    let perfSeconds = 0;
+    let perfFrames = 0;
+    let perfWarmedUp = false;
     const clock = new THREE.Clock();
 
     function afterDraw(cb: () => void) {
@@ -490,6 +516,24 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
       if (isDisposed) return;
       const rawDt = clock.getDelta();
       const dt = Math.min(rawDt, 0.05);
+
+      // Adaptive resolution: if the device cannot hold about 42 frames a second,
+      // render fewer pixels. Checked every 2 seconds, after a short warm-up, and never
+      // while the tab was in the background (a long gap is not a slow frame).
+      if (!isSoftwareGl && rawDt < 0.25) {
+        perfSeconds += rawDt;
+        perfFrames += 1;
+        if (perfSeconds >= 2) {
+          const fps = perfFrames / perfSeconds;
+          if (perfWarmedUp && fps < 42 && pixelRatio > minPixelRatio) {
+            pixelRatio = Math.max(minPixelRatio, pixelRatio - 0.15);
+            renderer.setPixelRatio(pixelRatio);
+          }
+          perfWarmedUp = true;
+          perfSeconds = 0;
+          perfFrames = 0;
+        }
+      }
       const elapsed = clock.getElapsedTime();
       const currentProps = propsRef.current;
 

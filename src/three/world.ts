@@ -408,7 +408,8 @@ export interface OceanEnvironmentRig {
 
 export function buildOceanWorld(
   scene: THREE.Scene,
-  textures: OceanTextureLibrary
+  textures: OceanTextureLibrary,
+  lightGraphics = false
 ): OceanEnvironmentRig {
   // 1. Sculpted Continuous Seabed & Sandy Island Mesh (220 x 220m, 160x160 segments)
   const terrainGeo = new THREE.PlaneGeometry(220, 220, 160, 160);
@@ -887,7 +888,7 @@ export function buildOceanWorld(
   scene.add(sunBeamsGroup);
 
   // 7B. Bioluminescent Grotto: rock ring, entrance arches and glowing crystals
-  const grotto = createGrotto(groundHeightAt);
+  const grotto = createGrotto(groundHeightAt, !lightGraphics);
   scene.add(grotto.group);
 
   // 8. Gentle Ocean Current Stream & Plankton Shimmer Particles

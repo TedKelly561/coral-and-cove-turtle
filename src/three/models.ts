@@ -2322,7 +2322,10 @@ export const GROTTO_RING = {
  * two entrance arches, and glowing crystals and wall-lichen inside.
  * Layout is deterministic so the collision spires always match what is drawn.
  */
-export function createGrotto(groundAt: (x: number, z: number) => number): {
+export function createGrotto(
+  groundAt: (x: number, z: number) => number,
+  withPointLights = true
+): {
   group: THREE.Group;
   glowMaterials: THREE.MeshStandardMaterial[];
 } {
@@ -2442,7 +2445,9 @@ export function createGrotto(groundAt: (x: number, z: number) => number): {
     [8, -6, 0xa78bfa],
     [2, 10, 0x34d399],
   ];
-  lightSpecs.forEach(([dx, dz, hex]) => {
+  // Every extra light is paid for on every lit surface in the world, so the light
+  // graphics mode leaves these out and relies on the glowing crystals alone.
+  (withPointLights ? lightSpecs : []).forEach(([dx, dz, hex]) => {
     const lx = GROTTO_CENTER.x + dx;
     const lz = GROTTO_CENTER.z + dz;
     const light = new THREE.PointLight(hex, 7, 16, 1.6);
