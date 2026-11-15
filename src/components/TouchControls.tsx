@@ -95,7 +95,7 @@ function HoldButton({
       onPointerUp={() => onHold(false)}
       onPointerCancel={() => onHold(false)}
       onContextMenu={(e) => e.preventDefault()}
-      className="w-14 h-14 rounded-2xl bg-slate-950/65 border border-sky-300/40 text-xl text-sky-100 active:bg-sky-500/50"
+      className="w-16 h-16 rounded-2xl bg-slate-950/65 border border-sky-300/40 text-xl text-sky-100 active:bg-sky-500/50"
       style={{ touchAction: 'none' }}
     >
       {label}
@@ -123,21 +123,11 @@ function TapButton({ label, onTap }: { label: string; onTap: () => void }) {
  * people can share one tablet. Leave the Baby stick alone and she follows Mom by herself.
  */
 export function TouchControls({ onSteer, onVertical, onSing, onRoll, onMunch }: TouchControlsProps) {
-  const side = (who: Who, label: string, mirrored: boolean) => (
+  // Thumb on the stick in the bottom corner, forefinger on the arrows: those sit at the
+  // screen edge about halfway up, so one hand can steer and dive at the same time.
+  const stickAndActions = (who: Who, label: string, mirrored: boolean) => (
     <div className={`flex items-end gap-3 ${mirrored ? 'flex-row-reverse' : ''}`}>
       <Joystick label={label} onChange={(x, y) => onSteer(who, x, y)} />
-      <div className="flex flex-col gap-2">
-        <HoldButton
-          label="▲"
-          ariaLabel={`${label} swim up`}
-          onHold={(held) => onVertical(who, held ? 1 : 0)}
-        />
-        <HoldButton
-          label="▼"
-          ariaLabel={`${label} dive down`}
-          onHold={(held) => onVertical(who, held ? -1 : 0)}
-        />
-      </div>
       <div className="flex flex-col gap-2">
         <TapButton label="Sing" onTap={() => onSing(who)} />
         <TapButton label="Roll" onTap={() => onRoll(who)} />
@@ -146,13 +136,37 @@ export function TouchControls({ onSteer, onVertical, onSing, onRoll, onMunch }: 
     </div>
   );
 
-  return (
+  const upDown = (who: Who, label: string, mirrored: boolean) => (
     <div
-      className="absolute inset-x-0 bottom-0 z-20 flex items-end justify-between px-4 pb-4 pointer-events-none select-none"
-      style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}
+      className={`absolute top-1/2 -translate-y-1/2 z-20 flex flex-col gap-3 pointer-events-auto select-none ${
+        mirrored ? 'right-3' : 'left-3'
+      }`}
+      style={mirrored ? { right: 'max(0.75rem, env(safe-area-inset-right))' } : { left: 'max(0.75rem, env(safe-area-inset-left))' }}
     >
-      <div className="pointer-events-auto">{side('mom', 'Mom', false)}</div>
-      <div className="pointer-events-auto">{side('baby', 'Baby', true)}</div>
+      <HoldButton
+        label="▲"
+        ariaLabel={`${label} swim up`}
+        onHold={(held) => onVertical(who, held ? 1 : 0)}
+      />
+      <HoldButton
+        label="▼"
+        ariaLabel={`${label} dive down`}
+        onHold={(held) => onVertical(who, held ? -1 : 0)}
+      />
     </div>
+  );
+
+  return (
+    <>
+      {upDown('mom', 'Mom', false)}
+      {upDown('baby', 'Baby', true)}
+      <div
+        className="absolute inset-x-0 bottom-0 z-20 flex items-end justify-between px-4 pb-4 pointer-events-none select-none"
+        style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}
+      >
+        <div className="pointer-events-auto">{stickAndActions('mom', 'Mom', false)}</div>
+        <div className="pointer-events-auto">{stickAndActions('baby', 'Baby', true)}</div>
+      </div>
+    </>
   );
 }

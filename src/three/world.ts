@@ -408,7 +408,8 @@ export interface OceanEnvironmentRig {
 
 export function buildOceanWorld(
   scene: THREE.Scene,
-  textures: OceanTextureLibrary
+  textures: OceanTextureLibrary,
+  lightGraphics = false
 ): OceanEnvironmentRig {
   // 1. Sculpted Continuous Seabed & Sandy Island Mesh (220 x 220m, 160x160 segments)
   const terrainGeo = new THREE.PlaneGeometry(220, 220, 160, 160);
@@ -887,7 +888,7 @@ export function buildOceanWorld(
   scene.add(sunBeamsGroup);
 
   // 7B. Bioluminescent Grotto: rock ring, entrance arches and glowing crystals
-  const grotto = createGrotto(groundHeightAt);
+  const grotto = createGrotto(groundHeightAt, !lightGraphics);
   scene.add(grotto.group);
 
   // 8. Gentle Ocean Current Stream & Plankton Shimmer Particles
@@ -936,7 +937,15 @@ export function buildOceanWorld(
     bevelSize: 0.015,
     bevelSegments: 2,
   });
-  fishGeo.rotateY(Math.PI / 2);
+  // The outline is drawn nose-up. Turn it so the nose points forward (+Z, the way
+  // lookAt aims a fish), the dorsal fin points up and the thin side faces sideways.
+  fishGeo.applyMatrix4(
+    new THREE.Matrix4().makeBasis(
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(0, 0, 1),
+      new THREE.Vector3(1, 0, 0)
+    )
+  );
   fishGeo.center();
 
   const fishMat = new THREE.MeshStandardMaterial({
@@ -1486,20 +1495,21 @@ export function buildOceanWorld(
 
     // 1C. Update Clownfish Pairs (Playful wobble around sea anemones)
     clownfishPairs.forEach((cf, idx) => {
-      const a = elapsed * 1.8 + cf.wigglePhase;
-      const cx = cf.homePos.x + Math.cos(a) * 0.65;
-      const cz = cf.homePos.z + Math.sin(a) * 0.65;
-      const floorY = groundHeightAt(cx, cz) + 0.45;
-      const cy = floorY + 0.4 + Math.sin(elapsed * 2.8 + idx) * 0.22;
-      cf.group.position.set(cx, cy, cz);
-      _vec3A.set(
-        cf.homePos.x + Math.cos(a + 0.2) * 0.65,
-        cy,
-        cf.homePos.z + Math.sin(a + 0.2) * 0.65
-      );
+      // Each fish drifts in a lazy, slightly wobbly loop around its anemone, the two of a
+      // pair on opposite sides, darting in a little closer now and then.
+      const a = elapsed * 0.55 + cf.wigglePhase + (idx % 2) * Math.PI;
+      const loopAt = (angle: number, out: THREE.Vector3) => {
+        const r = 1.05 + Math.sin(angle * 2.3 + idx) * 0.35;
+        return out.set(cf.homePos.x + Math.cos(angle) * r, 0, cf.homePos.z + Math.sin(angle) * r);
+      };
+      loopAt(a, _vec3B);
+      loopAt(a + 0.12, _vec3A);
+      const floorY = groundHeightAt(_vec3B.x, _vec3B.z) + 0.55;
+      const cy = floorY + 0.45 + Math.sin(elapsed * 1.3 + idx * 1.7) * 0.25;
+      cf.group.position.set(_vec3B.x, cy, _vec3B.z);
+      _vec3A.y = cy + Math.cos(elapsed * 1.3 + idx * 1.7) * 0.04;
       cf.group.lookAt(_vec3A);
-      cf.group.rotation.z = Math.sin(elapsed * 7 + idx) * 0.18;
-      cf.tailMesh.rotation.y = Math.sin(elapsed * 11 + idx) * 0.42;
+      cf.tailMesh.rotation.y = Math.sin(elapsed * 9 + idx) * 0.45;
     });
 
     // 1D. Update Coral Crabs (Sideways scuttle, claw pinch, and swimming flutter)
@@ -1697,7 +1707,8 @@ export function buildOceanWorld(
       whaleShark.group.position.distanceTo(momPos),
       whaleShark.group.position.distanceTo(babyPos)
     );
-    const wsSpeed = wsDist < 14 ? 0.08 : 0.15;
+    // Unhurried cruising, slower still when the turtles are close enough to swim alongside.
+    const wsSpeed = wsDist < 14 ? 0.035 : 0.06;
     if (wsDist < 14) {
       activeReaction = 'Majestic Humpback Whale gliding peacefully alongside the turtles!';
       if (turtleCallTimer > 0 || wsDist < 8.0) {
@@ -1712,23 +1723,32 @@ export function buildOceanWorld(
       dt
     );
 
+    // Route: one wide oval through the deep channel. It stays at least 9 m clear of both
+    // shipwrecks and over seabed no shallower than about 10 m, so the whale never has
+    // to squeeze over a sand bank.
     whaleShark.angle += dt * wsSpeed;
-    const wx = Math.cos(whaleShark.angle) * 34;
-    const wz = -46 + Math.sin(whaleShark.angle * 2) * 11;
-    const nextWx = Math.cos(whaleShark.angle + 0.04) * 34;
-    const nextWz = -46 + Math.sin((whaleShark.angle + 0.04) * 2) * 11;
+    const whaleAt = (angle: number, out: THREE.Vector3) =>
+      out.set(-10 + Math.cos(angle) * 30, 0, -52 + Math.sin(angle) * 13);
+    whaleAt(whaleShark.angle, _vec3B);
+    whaleAt(whaleShark.angle + 0.04, _vec3A);
+    const wx = _vec3B.x;
+    const wz = _vec3B.z;
+    const nextWx = _vec3A.x;
+    const nextWz = _vec3A.z;
     const wsHeading = Math.atan2(nextWx - wx, nextWz - wz);
 
-    // Sample 5 points across the Whale's 9.5-meter body & 5.2-meter pectoral wingspan!
-    const wsFootprint = sampleFootprintGround(wx, wz, wsHeading, 5.2, 2.6);
-    // Guarantee at least 2.5 meters of clearance above the highest sand point
-    const targetSafeWhaleY = Math.min(-2.2, Math.max(-7.6, wsFootprint.maxGroundY + 2.55));
-    whaleShark.smoothedY = THREE.MathUtils.damp(whaleShark.smoothedY, targetSafeWhaleY, 4.0, dt);
+    // Sample under the whole body and both pectoral fins, and keep a generous 4.5 m of
+    // water under it. It also stays well below the surface.
+    const wsFootprint = sampleFootprintGround(wx, wz, wsHeading, 6.5, 3.6);
+    const targetSafeWhaleY =
+      THREE.MathUtils.clamp(wsFootprint.maxGroundY + 4.5, -8.5, -3.8) +
+      Math.sin(elapsed * 0.35) * 0.35;
+    whaleShark.smoothedY = THREE.MathUtils.damp(whaleShark.smoothedY, targetSafeWhaleY, 1.2, dt);
 
     const slopePitch = THREE.MathUtils.clamp(
-      (wsFootprint.noseGroundY - wsFootprint.tailGroundY) * 0.08,
-      -0.22,
-      0.22
+      (wsFootprint.noseGroundY - wsFootprint.tailGroundY) * 0.05,
+      -0.15,
+      0.15
     );
 
     whaleShark.group.position.set(wx, whaleShark.smoothedY, wz);
@@ -1736,7 +1756,7 @@ export function buildOceanWorld(
     whaleShark.group.lookAt(_vec3A);
 
     // True Cetacean Swimming: Tail flukes undulate VERTICALLY (up & down)!
-    whaleShark.tailPivot.rotation.x = Math.sin(elapsed * 1.6) * 0.28;
+    whaleShark.tailPivot.rotation.x = Math.sin(elapsed * 1.1) * 0.24;
 
     // 5. Update Bioluminescent Moon Jellyfish (Sand-Safe Floating)
     jellyfishList.forEach((j) => {
