@@ -1,5 +1,5 @@
-import type { FirebaseOptions } from 'firebase/app';
-import type { Auth, User } from 'firebase/auth';
+import type { FirebaseOptions } from '@firebase/app';
+import type { Auth, User } from '@firebase/auth';
 import { DriveFileEntry, SavedOceanJournal } from '../types/game';
 
 export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
@@ -38,14 +38,14 @@ export const DRIVE_NOT_CONFIGURED_MESSAGE =
 
 // Firebase is a large library and only the optional Drive feature needs it, so it is
 // fetched on demand (and never, when no settings are present).
-type FirebaseAuthModule = typeof import('firebase/auth');
+type FirebaseAuthModule = typeof import('@firebase/auth');
 let authLoader: Promise<{ auth: Auth; authModule: FirebaseAuthModule }> | null = null;
 let loadedAuth: Auth | null = null;
 
 const loadAuth = () => {
   if (!firebaseConfig) return Promise.reject(new Error(DRIVE_NOT_CONFIGURED_MESSAGE));
   if (!authLoader) {
-    authLoader = Promise.all([import('firebase/app'), import('firebase/auth')]).then(
+    authLoader = Promise.all([import('@firebase/app'), import('@firebase/auth')]).then(
       ([appModule, authModule]) => {
         const app =
           appModule.getApps().length === 0
