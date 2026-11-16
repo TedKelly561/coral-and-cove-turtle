@@ -874,57 +874,166 @@ export function createShipwreck(
     opacity: 0.74,
   });
 
-  // 1. Heavy Keel Spine, Curved Stempost (Bow) & Sternpost with Rudder
-  const keel = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.9, 15.2), hullMat);
-  keel.position.y = 0.45;
+  // 1. Planked hull. A real ship's side curves up and out from the keel to the gunwale,
+  // widest amidships and drawn in to a point at the bow. The shell is built station by
+  // station along the length, then broken open in places so it reads as a wreck: a large
+  // breach to swim through on one side, a smaller one on the other, and a ragged top edge.
+  const HULL_STERN_Z = -7.95;
+  const HULL_LENGTH = 16.6;
+  const STATIONS = 28;
+  const GIRTH_STEPS = 9;
+
+  const halfBreadth = (u: number) =>
+    u < 0.4
+      ? 2.5 * (0.78 + 0.22 * Math.sin((u / 0.4) * (Math.PI / 2)))
+      : 2.5 * Math.pow(Math.max(0, Math.cos(((u - 0.4) / 0.6) * (Math.PI / 2))), 0.75);
+  const sheerHeight = (u: number) => {
+    const d = (u - 0.45) / 0.55;
+    return 2.95 + d * d * (u < 0.45 ? 1.5 : 1.0);
+  };
+  const keelRise = (u: number) => (u > 0.78 ? Math.pow((u - 0.78) / 0.22, 2) * 1.9 : 0);
+  /** Point on the hull skin: u runs stern to bow, g runs keel to gunwale, side is -1 or 1. */
+  const hullPoint = (u: number, g: number, side: number, out = new THREE.Vector3()) => {
+    const y0 = keelRise(u);
+    return out.set(
+      side * halfBreadth(u) * Math.pow(Math.sin(g * (Math.PI / 2)), 0.72),
+      y0 + (sheerHeight(u) - y0) * (1 - Math.cos(g * (Math.PI / 2))),
+      HULL_STERN_Z + u * HULL_LENGTH
+    );
+  };
+  const isBreached = (u: number, g: number, side: number) => {
+    if (side === 1 && u > 0.37 && u < 0.57 && g > 0.3) return true; // swim-through
+    if (side === -1 && u > 0.6 && u < 0.7 && g > 0.5) return true; // torn bow quarter
+    if (side === -1 && u > 0.2 && u < 0.27 && g > 0.25 && g < 0.6) return true; // shot hole
+    return g > 0.86 && Math.sin(u * 41 + side * 1.7) > 0.25; // ragged, rotted gunwale
+  };
+
+  const hullPositions: number[] = [];
+  const hullUvs: number[] = [];
+  const corner = new THREE.Vector3();
+  const pushCorner = (u: number, g: number, side: number) => {
+    hullPoint(u, g, side, corner);
+    hullPositions.push(corner.x, corner.y, corner.z);
+    hullUvs.push(u * 5, g * 1.6);
+  };
+  [-1, 1].forEach((side) => {
+    for (let i = 0; i < STATIONS; i++) {
+      for (let j = 0; j < GIRTH_STEPS; j++) {
+        const u0 = i / STATIONS;
+        const u1 = (i + 1) / STATIONS;
+        const g0 = j / GIRTH_STEPS;
+        const g1 = (j + 1) / GIRTH_STEPS;
+        if (isBreached((u0 + u1) / 2, (g0 + g1) / 2, side)) continue;
+        pushCorner(u0, g0, side);
+        pushCorner(u1, g0, side);
+        pushCorner(u1, g1, side);
+        pushCorner(u0, g0, side);
+        pushCorner(u1, g1, side);
+        pushCorner(u0, g1, side);
+      }
+    }
+  });
+  const hullGeo = new THREE.BufferGeometry();
+  hullGeo.setAttribute('position', new THREE.Float32BufferAttribute(hullPositions, 3));
+  hullGeo.setAttribute('uv', new THREE.Float32BufferAttribute(hullUvs, 2));
+  hullGeo.computeVertexNormals();
+  const hullSkinMat = hullMat.clone();
+  hullSkinMat.side = THREE.DoubleSide;
+  const hullSkin = new THREE.Mesh(hullGeo, hullSkinMat);
+  hullSkin.castShadow = true;
+  hullSkin.receiveShadow = true;
+  wreck.add(hullSkin);
+
+  // Frames (ribs) inside the planking, following the same curve. They show through the
+  // breaches, and a few stand proud of the rotted gunwale.
+  [0.08, 0.2, 0.32, 0.42, 0.47, 0.52, 0.57, 0.66, 0.76, 0.86].forEach((u, idx) => {
+    [-1, 1].forEach((side) => {
+      const reach = idx % 3 === 0 ? 1.12 : 1.0;
+      const curvePoints = Array.from({ length: 9 }, (_, k) => {
+        const point = hullPoint(u, Math.min(1, (k / 8) * reach), side);
+        point.x *= 0.95;
+        if ((k / 8) * reach > 1) point.y += ((k / 8) * reach - 1) * 3.2;
+        return point;
+      });
+      const rib = new THREE.Mesh(
+        new THREE.TubeGeometry(new THREE.CatmullRomCurve3(curvePoints), 16, 0.11, 6),
+        hullMat
+      );
+      rib.castShadow = true;
+      wreck.add(rib);
+    });
+  });
+
+  // Keel timber along the bottom, raked stem post at the bow, and the rudder.
+  const keel = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.5, 13.4), hullMat);
+  keel.position.set(0, -0.12, HULL_STERN_Z + 6.6);
   keel.castShadow = true;
-  keel.receiveShadow = true;
   wreck.add(keel);
 
-  const rudder = new THREE.Mesh(new THREE.BoxGeometry(0.28, 3.6, 1.45), trimMat);
-  rudder.position.set(0, 2.1, -8.1);
+  const stemFoot = hullPoint(0.8, 0, 1);
+  const stemHead = hullPoint(1, 1, 1);
+  stemHead.y += 0.7;
+  const stem = new THREE.Mesh(
+    new THREE.TubeGeometry(
+      new THREE.CatmullRomCurve3([
+        new THREE.Vector3(0, stemFoot.y - 0.1, stemFoot.z),
+        new THREE.Vector3(0, hullPoint(0.93, 0, 1).y, hullPoint(0.93, 0, 1).z + 0.15),
+        new THREE.Vector3(0, hullPoint(1, 0.6, 1).y, stemHead.z + 0.12),
+        new THREE.Vector3(0, stemHead.y, stemHead.z + 0.05),
+      ]),
+      14,
+      0.2,
+      6
+    ),
+    hullMat
+  );
+  stem.castShadow = true;
+  wreck.add(stem);
+
+  const rudder = new THREE.Mesh(new THREE.BoxGeometry(0.22, 3.0, 1.3), trimMat);
+  rudder.position.set(0, 1.5, HULL_STERN_Z - 0.7);
   rudder.rotation.y = 0.28; // Turned rudder blade
   wreck.add(rudder);
 
-  // 2. Contoured Timber Hull Ribs & Plank Strakes (9 rib stations + outer hull strake bands)
-  for (let i = -4; i <= 4; i++) {
-    const zPos = i * 1.65;
-    const widthFactor = 1.0 - Math.pow(Math.abs(i) / 4.8, 1.8) * 0.48;
-
-    [-1, 1].forEach((side) => {
-      const rib = new THREE.Mesh(
-        new THREE.TorusGeometry(2.55 * widthFactor, 0.17, 10, 18, Math.PI * 0.58),
-        hullMat
-      );
-      rib.position.set(side * 0.35, 2.35, zPos);
-      rib.rotation.z = side === 1 ? -Math.PI * 0.46 : -Math.PI * 0.08;
-      rib.castShadow = true;
-      wreck.add(rib);
-
-      // Outer longitudinal hull plank strakes (with swim-through breaches midship)
-      if (Math.abs(i) !== 1) {
-        const strake = new THREE.Mesh(
-          new THREE.BoxGeometry(0.16, 1.15, 1.72),
-          i % 2 === 0 ? hullMat : trimMat
-        );
-        strake.position.set(side * 2.55 * widthFactor, 1.9, zPos);
-        strake.rotation.z = side * -0.22;
-        strake.castShadow = true;
-        wreck.add(strake);
-      }
-    });
+  // 2. Main deck, cut to the hull's outline so it never sticks out through the sides.
+  const DECK_Y = 2.65;
+  const deckFrom = 0.24;
+  const deckTo = 0.93;
+  const deckOutline = new THREE.Shape();
+  const deckSteps = 18;
+  const deckHalfWidth = (u: number) => {
+    // Width of the hull at deck height, a touch inside the planking.
+    const y0 = keelRise(u);
+    const g = (Math.acos(1 - (DECK_Y - y0) / (sheerHeight(u) - y0)) / (Math.PI / 2)) || 0;
+    return halfBreadth(u) * Math.pow(Math.sin(Math.min(1, g) * (Math.PI / 2)), 0.72) * 0.96;
+  };
+  for (let k = 0; k <= deckSteps; k++) {
+    const u = deckFrom + ((deckTo - deckFrom) * k) / deckSteps;
+    const z = HULL_STERN_Z + u * HULL_LENGTH;
+    if (k === 0) deckOutline.moveTo(deckHalfWidth(u), z);
+    else deckOutline.lineTo(deckHalfWidth(u), z);
   }
-
-  // 3. Planked Main Deck, Cargo Hatch Coaming & Forecastle Deck
-  const foreDeck = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.24, 4.8), hullMat);
-  foreDeck.position.set(0, 2.65, 4.4);
-  foreDeck.receiveShadow = true;
-  wreck.add(foreDeck);
-
-  const aftDeck = new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.24, 4.6), hullMat);
-  aftDeck.position.set(0, 2.65, -2.6);
-  aftDeck.receiveShadow = true;
-  wreck.add(aftDeck);
+  for (let k = deckSteps; k >= 0; k--) {
+    const u = deckFrom + ((deckTo - deckFrom) * k) / deckSteps;
+    deckOutline.lineTo(-deckHalfWidth(u), HULL_STERN_Z + u * HULL_LENGTH);
+  }
+  deckOutline.closePath();
+  // A jagged gap where the deck has fallen in above the big breach.
+  const collapse = new THREE.Path();
+  collapse.moveTo(0.5, -0.6);
+  collapse.lineTo(2.1, -0.9);
+  collapse.lineTo(2.2, 0.9);
+  collapse.lineTo(1.2, 1.3);
+  collapse.lineTo(0.7, 0.4);
+  collapse.closePath();
+  deckOutline.holes.push(collapse);
+  const deckGeo = new THREE.ExtrudeGeometry(deckOutline, { depth: 0.16, bevelEnabled: false });
+  // Shape is drawn in (x, z); lay it flat so its thickness runs down from deck height.
+  deckGeo.rotateX(Math.PI / 2);
+  const deck = new THREE.Mesh(deckGeo, hullMat);
+  deck.position.y = DECK_Y;
+  deck.receiveShadow = true;
+  wreck.add(deck);
 
   // Midship Cargo Hatch Frame
   const hatchFrame = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.38, 2.4), trimMat);
@@ -955,8 +1064,8 @@ export function createShipwreck(
   });
 
   // 5. Elevated Stern Captain's Cabin, Quarterdeck Balustrade & Bevelled Gallery Windows
-  const sternCabin = new THREE.Mesh(new THREE.BoxGeometry(4.4, 3.3, 4.2), hullMat);
-  sternCabin.position.set(0, 2.55, -5.9);
+  const sternCabin = new THREE.Mesh(new THREE.BoxGeometry(3.9, 3.0, 4.2), hullMat);
+  sternCabin.position.set(0, 2.7, -5.9);
   sternCabin.castShadow = true;
   wreck.add(sternCabin);
 
@@ -990,12 +1099,6 @@ export function createShipwreck(
   }
 
   // 6. Bowsprit Spar & Carved Sea-Nymph / Scroll Figurehead at Bow
-  const bowHull = new THREE.Mesh(new THREE.ConeGeometry(2.65, 5.4, 12, 1, true), hullMat);
-  bowHull.rotation.x = Math.PI / 2;
-  bowHull.scale.set(1.0, 1.0, 0.76);
-  bowHull.position.set(0, 1.9, 6.4);
-  wreck.add(bowHull);
-
   const bowsprit = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.3, 6.8, 12), trimMat);
   bowsprit.rotation.x = Math.PI * 0.34;
   bowsprit.position.set(0, 3.25, 9.4);

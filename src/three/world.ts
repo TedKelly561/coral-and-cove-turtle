@@ -1687,7 +1687,8 @@ export function buildOceanWorld(
 
       const dx = orbitCenterX + Math.cos(d.angle + idx * 0.45) * orbitR;
       const dz = orbitCenterZ + Math.sin(d.angle + idx * 0.45) * orbitR;
-      const heading = -(d.angle + idx * 0.45) + Math.PI;
+      // Nose along the direction of travel around the circle (the model faces +Z).
+      const heading = -(d.angle + idx * 0.45);
 
       const fp = sampleFootprintGround(dx, dz, heading, 1.8, 0.8);
       const minSafeY = fp.maxGroundY + 1.25;
