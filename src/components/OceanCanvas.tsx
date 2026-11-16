@@ -492,6 +492,8 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     let isDisposed = false;
     let camHeldUnderwater = false;
     let wreckCamBlend = 0;
+    let momWreckBlend = 0;
+    let babyWreckBlend = 0;
     let perfSeconds = 0;
     let perfFrames = 0;
     let perfWarmedUp = false;
@@ -1386,6 +1388,16 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
       // 13. Camera Choreography
       const distBetweenTurtles = momPos.distanceTo(babyPos);
 
+      // How far each turtle's own camera should tuck in: 0 in open water, 1 inside a wreck.
+      momWreckBlend = THREE.MathUtils.damp(momWreckBlend, isInsideWreck(momPos) ? 1 : 0, 3.5, dt);
+      babyWreckBlend = THREE.MathUtils.damp(
+        babyWreckBlend,
+        isInsideWreck(babyPos) ? 1 : 0,
+        3.5,
+        dt
+      );
+      const lerp = THREE.MathUtils.lerp;
+
       if (currentProps.screenState === 'title') {
         const camAngle = elapsed * 0.14;
         _vec3A.set(
@@ -1398,7 +1410,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         mainCamera.lookAt(camLookTarget);
       } else if (currentProps.cameraMode === 'follow_mom') {
         _vec3A
-          .set(0, 2.2, -7.8)
+          .set(0, lerp(2.2, 0.75, momWreckBlend), -lerp(7.8, 3.4, momWreckBlend))
           .applyAxisAngle(_vec3B.set(0, 1, 0), momHeading)
           .add(momPos);
         const minCamY = groundHeightAt(_vec3A.x, _vec3A.z) + 0.85;
@@ -1408,7 +1420,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         mainCamera.lookAt(camLookTarget);
       } else if (currentProps.cameraMode === 'follow_baby') {
         _vec3A
-          .set(0, 1.8, -6.2)
+          .set(0, lerp(1.8, 0.55, babyWreckBlend), -lerp(6.2, 2.6, babyWreckBlend))
           .applyAxisAngle(_vec3B.set(0, 1, 0), babyHeading)
           .add(babyPos);
         const minCamY = groundHeightAt(_vec3A.x, _vec3A.z) + 0.75;
@@ -1518,7 +1530,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         renderer.setScissorTest(true);
 
         _vec3A
-          .set(0, 2.1, -7.2)
+          .set(0, lerp(2.1, 0.75, momWreckBlend), -lerp(7.2, 3.4, momWreckBlend))
           .applyAxisAngle(_vec3B.set(0, 1, 0), momHeading)
           .add(momPos);
         _vec3A.y = Math.max(_vec3A.y, groundHeightAt(_vec3A.x, _vec3A.z) + 0.85);
@@ -1531,7 +1543,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         renderer.render(scene, splitCamMom);
 
         _vec3A
-          .set(0, 1.7, -5.8)
+          .set(0, lerp(1.7, 0.55, babyWreckBlend), -lerp(5.8, 2.6, babyWreckBlend))
           .applyAxisAngle(_vec3B.set(0, 1, 0), babyHeading)
           .add(babyPos);
         _vec3A.y = Math.max(_vec3A.y, groundHeightAt(_vec3A.x, _vec3A.z) + 0.75);
