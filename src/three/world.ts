@@ -8,10 +8,7 @@ import {
   createClownfish,
   createCoconutPalm,
   createCoralCrab,
-  createDolphin,
   createEdibleSeaweedPatch,
-  createGreatWhale,
-  createMantaRay,
   createMoonJellyfish,
   createSeaAnemone,
   createSeaFan,
@@ -24,11 +21,20 @@ import {
   getBranchCoralGeometry,
   getCoralSurfaceTexture,
   SHIP_HULL,
-  createSpottedEagleRay,
   createStaghornCoral,
   createStarfish,
-  createYellowtailSnapper,
 } from './models';
+import {
+  createDolphin,
+  createGreatWhale,
+  createMantaRay,
+  createOctopus,
+  createPufferfish,
+  createSeahorse,
+  createSpottedEagleRay,
+  createYellowtailSnapper,
+  getSchoolFishGeometry,
+} from './creatures';
 
 // Pre-allocated module-scope scratch objects to guarantee Zero GC in render loop
 const _dummy = new THREE.Object3D();
@@ -399,6 +405,9 @@ export interface FishBoid {
   homeCenter: THREE.Vector3;
   scale: number;
   phase: number;
+  /** Which school-fish mesh draws this fish, and its slot in that mesh. */
+  mesh: THREE.InstancedMesh;
+  slot: number;
 }
 
 export interface OceanEnvironmentRig {
@@ -413,8 +422,8 @@ export interface OceanEnvironmentRig {
   edibleSeaweedPatches: EdibleSeaweedPatch[];
   mantaRays: {
     group: THREE.Group;
-    leftWing: THREE.Mesh;
-    rightWing: THREE.Mesh;
+    leftWing: THREE.Object3D;
+    rightWing: THREE.Object3D;
     friendHaloMat: THREE.MeshBasicMaterial;
     center: THREE.Vector3;
     radius: number;
@@ -425,8 +434,8 @@ export interface OceanEnvironmentRig {
   }[];
   eagleRays: {
     group: THREE.Group;
-    leftWing: THREE.Mesh;
-    rightWing: THREE.Mesh;
+    leftWing: THREE.Object3D;
+    rightWing: THREE.Object3D;
     friendHaloMat: THREE.MeshBasicMaterial;
     center: THREE.Vector3;
     radius: number;
@@ -1058,46 +1067,29 @@ export function buildOceanWorld(
   // 9. Interactive Schooling Reef Fish Boids (220 Fish across 7 Tropical Schools)
   const fishCount = 220;
 
-  // Sculpted Realistic Hydrodynamic Fish Geometry (Snout, Dorsal Fin, Forked Caudal Tail, Anal Fin)
-  const fishShape = new THREE.Shape();
-  fishShape.moveTo(0, 0.28); // Snout
-  fishShape.quadraticCurveTo(0.12, 0.16, 0.15, 0.0); // Top forehead to mid-back
-  fishShape.lineTo(0.24, -0.08); // Dorsal fin crest
-  fishShape.lineTo(0.14, -0.16); // Dorsal fin back slope
-  fishShape.quadraticCurveTo(0.04, -0.24, 0.03, -0.28); // Caudal peduncle top
-  fishShape.lineTo(0.16, -0.42); // Upper caudal tail fin tip
-  fishShape.lineTo(0.0, -0.32); // Caudal tail fork notch
-  fishShape.lineTo(-0.16, -0.42); // Lower caudal tail fin tip
-  fishShape.lineTo(-0.03, -0.28); // Caudal peduncle bottom
-  fishShape.quadraticCurveTo(-0.04, -0.2, -0.08, -0.15); // Anal fin
-  fishShape.quadraticCurveTo(-0.12, 0.02, -0.08, 0.16); // Underbelly to chin
-  fishShape.closePath();
-
-  const fishGeo = new THREE.ExtrudeGeometry(fishShape, {
-    depth: 0.055,
-    bevelEnabled: true,
-    bevelThickness: 0.02,
-    bevelSize: 0.015,
-    bevelSegments: 2,
-  });
-  // The outline is drawn nose-up. Turn it so the nose points forward (+Z, the way
-  // lookAt aims a fish), the dorsal fin points up and the thin side faces sideways.
-  fishGeo.applyMatrix4(
-    new THREE.Matrix4().makeBasis(
-      new THREE.Vector3(0, 1, 0),
-      new THREE.Vector3(0, 0, 1),
-      new THREE.Vector3(1, 0, 0)
-    )
-  );
-  fishGeo.center();
-
+  // Two kinds of schooling fish, each drawn as one instanced mesh: slender darting fish
+  // and tall-bodied tangs. A school is all one kind and one colour.
   const fishMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    roughness: 0.28,
-    metalness: 0.42,
+    vertexColors: true,
+    roughness: 0.3,
+    metalness: 0.3,
+    side: THREE.DoubleSide,
   });
-  const fishInstanced = new THREE.InstancedMesh(fishGeo, fishMat, fishCount);
+  const discSchools = new Set([0, 1, 3]); // yellow tang, blue tang, damselfish
+  const schoolCount = 7;
+  const discTotal = Array.from({ length: fishCount }, (_, i) => i).filter((i) =>
+    discSchools.has(i % schoolCount)
+  ).length;
+  const fishInstanced = new THREE.InstancedMesh(
+    getSchoolFishGeometry('slender'),
+    fishMat,
+    fishCount - discTotal
+  );
+  const discFishInstanced = new THREE.InstancedMesh(getSchoolFishGeometry('disc'), fishMat, discTotal);
   fishInstanced.frustumCulled = false;
+  discFishInstanced.frustumCulled = false;
+  let slenderSlot = 0;
+  let discSlot = 0;
 
   const fishColors = [
     0xfacc15, // Golden Yellow Tang
@@ -1121,6 +1113,7 @@ export function buildOceanWorld(
 
   for (let i = 0; i < fishCount; i++) {
     const center = schoolCenters[i % schoolCenters.length];
+    const isDisc = discSchools.has(i % schoolCount);
     const pos = new THREE.Vector3(
       center.x + (Math.random() - 0.5) * 9,
       center.y + (Math.random() - 0.5) * 2.8,
@@ -1130,14 +1123,19 @@ export function buildOceanWorld(
       pos,
       vel: new THREE.Vector3((Math.random() - 0.5) * 2.2, 0, (Math.random() - 0.5) * 2.2),
       homeCenter: center,
-      scale: 0.72 + Math.random() * 0.45,
+      scale: (isDisc ? 1.25 : 1.15) * (0.72 + Math.random() * 0.45),
       phase: Math.random() * Math.PI * 2,
+      mesh: isDisc ? discFishInstanced : fishInstanced,
+      slot: isDisc ? discSlot : slenderSlot,
     });
     _color.setHex(fishColors[i % fishColors.length]);
-    fishInstanced.setColorAt(i, _color);
+    if (isDisc) discFishInstanced.setColorAt(discSlot++, _color);
+    else fishInstanced.setColorAt(slenderSlot++, _color);
   }
-  if (fishInstanced.instanceColor) fishInstanced.instanceColor.needsUpdate = true;
-  scene.add(fishInstanced);
+  [fishInstanced, discFishInstanced].forEach((mesh) => {
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    scene.add(mesh);
+  });
 
   // 10A. Dedicated School of Yellowtail Snappers (10 Fish)
   const yellowtailSnappers = Array.from({ length: 10 }, (_, idx) => {
@@ -1168,6 +1166,52 @@ export function buildOceanWorld(
       homePos: home,
       wigglePhase: idx * 1.4,
     };
+  });
+
+  // 10B-2. Pufferfish: each potters around its own patch of reef and puffs up when a
+  // turtle swims close.
+  const pufferHomes: [number, number][] = [
+    [14, -9],
+    [21, -21],
+    [-23, -12],
+    [-9, -23],
+    [34, 14],
+  ];
+  const pufferfish = pufferHomes.map(([hx, hz], idx) => {
+    const puffer = createPufferfish();
+    puffer.group.scale.setScalar(1.5);
+    scene.add(puffer.group);
+    return { ...puffer, hx, hz, phase: idx * 1.9, puff: 0 };
+  });
+
+  // 10B-3. Seahorses bobbing upright among the kelp and in the grotto.
+  const seahorseSpots: [number, number, number][] = [
+    [35, 20, 0xf59e0b],
+    [39, 25, 0xfb7185],
+    [42, 21, 0xfacc15],
+    [36, 29, 0xa3e635],
+    [44, 27, 0xfdba74],
+    [31, 24, 0xf472b6],
+    [-40, 28, 0xc084fc],
+    [-45, 33, 0x67e8f9],
+  ];
+  const seahorses = seahorseSpots.map(([sx, sz, colorHex], idx) => {
+    const horse = createSeahorse(colorHex);
+    horse.group.scale.setScalar(1.7);
+    scene.add(horse.group);
+    return { ...horse, sx, sz, phase: idx * 2.3 };
+  });
+
+  // 10B-4. Octopuses creeping slowly over the seabed.
+  const octopusBeats: [number, number, number, number][] = [
+    [17, -25, 4.5, 0xd9573b],
+    [-17, -31, 3.5, 0xb45ad6],
+  ];
+  const octopuses = octopusBeats.map(([ox, oz, beat, colorHex], idx) => {
+    const octo = createOctopus(colorHex);
+    octo.group.scale.setScalar(1.25);
+    scene.add(octo.group);
+    return { ...octo, ox, oz, beat, angle: idx * 2.1 };
   });
 
   // 10C. Living Procedural Coral Reef Sanctuaries (Swaying Staghorns, Gorgonian Sea Fans & Anemones)
@@ -1616,9 +1660,10 @@ export function buildOceanWorld(
       _dummy.rotateY(Math.sin(elapsed * 12 + b.phase) * 0.16);
       _dummy.scale.setScalar(b.scale);
       _dummy.updateMatrix();
-      fishInstanced.setMatrixAt(i, _dummy.matrix);
+      b.mesh.setMatrixAt(b.slot, _dummy.matrix);
     }
     fishInstanced.instanceMatrix.needsUpdate = true;
+    discFishInstanced.instanceMatrix.needsUpdate = true;
 
     // 1B. Update Yellowtail Snappers School
     yellowtailSnappers.forEach((yt, idx) => {
@@ -1653,6 +1698,61 @@ export function buildOceanWorld(
       _vec3A.y = cy + Math.cos(elapsed * 1.3 + idx * 1.7) * 0.04;
       cf.group.lookAt(_vec3A);
       cf.tailMesh.rotation.y = Math.sin(elapsed * 9 + idx) * 0.45;
+    });
+
+    // 1C-2. Pufferfish: lazy wander; swell up and bristle when a turtle is close.
+    pufferfish.forEach((pf, idx) => {
+      const a = elapsed * 0.3 + pf.phase;
+      const r = 2.2 + Math.sin(a * 1.7 + idx) * 0.8;
+      _vec3B.set(pf.hx + Math.cos(a) * r, 0, pf.hz + Math.sin(a) * r);
+      _vec3A.set(
+        pf.hx + Math.cos(a + 0.1) * r,
+        0,
+        pf.hz + Math.sin(a + 0.1) * r
+      );
+      const py = Math.min(
+        -1.0,
+        groundHeightAt(_vec3B.x, _vec3B.z) + 1.3 + Math.sin(elapsed * 0.9 + idx * 2) * 0.3
+      );
+      _vec3B.y = py;
+      _vec3A.y = py;
+      const near = Math.min(_vec3B.distanceTo(momPos), _vec3B.distanceTo(babyPos));
+      pf.puff = THREE.MathUtils.damp(pf.puff, near < 3.4 ? 1 : 0, near < 3.4 ? 6 : 1.5, dt);
+      pf.group.position.copy(_vec3B);
+      pf.group.lookAt(_vec3A);
+      pf.body.scale.set(1 + pf.puff * 0.75, 1 + pf.puff * 0.75, 1 + pf.puff * 0.35);
+      pf.spikes.scale.setScalar(Math.max(0.001, pf.puff));
+      if (near < 3.4) activeReaction = 'Pufferfish puffing up into a spiky ball!';
+    });
+
+    // 1C-3. Seahorses: hover upright, drift a little, flutter the back fin.
+    seahorses.forEach((sh, idx) => {
+      const drift = elapsed * 0.25 + sh.phase;
+      const hx = sh.sx + Math.cos(drift) * 0.5;
+      const hz = sh.sz + Math.sin(drift * 1.3) * 0.5;
+      const hy = Math.min(
+        -1.2,
+        groundHeightAt(hx, hz) + 1.5 + Math.sin(elapsed * 0.8 + sh.phase) * 0.35
+      );
+      sh.group.position.set(hx, hy, hz);
+      sh.group.rotation.y = Math.sin(elapsed * 0.2 + sh.phase) * 1.2 + idx;
+      sh.group.rotation.x = Math.sin(elapsed * 0.8 + sh.phase) * 0.08;
+      sh.fin.rotation.y = Math.sin(elapsed * 22 + idx) * 0.5;
+    });
+
+    // 1C-4. Octopuses: creep round a small beat on the seabed, arms rippling.
+    octopuses.forEach((oc, idx) => {
+      oc.angle += dt * 0.09;
+      const cx = oc.ox + Math.cos(oc.angle) * oc.beat;
+      const cz = oc.oz + Math.sin(oc.angle) * oc.beat;
+      oc.group.position.set(cx, groundHeightAt(cx, cz) + 0.12, cz);
+      oc.group.rotation.y = -oc.angle;
+      const breath = 1 + Math.sin(elapsed * 1.6 + idx) * 0.05;
+      oc.mantle.scale.set(breath, 2 - breath, breath);
+      oc.arms.forEach((arm, k) => {
+        arm.rotation.x = Math.sin(elapsed * 1.3 + k * 0.8 + idx) * 0.12;
+        arm.rotation.z = Math.cos(elapsed * 1.1 + k * 1.1) * 0.1;
+      });
     });
 
     // 1D. Update Coral Crabs (Sideways scuttle, claw pinch, and swimming flutter)
