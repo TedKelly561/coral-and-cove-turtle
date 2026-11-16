@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { OceanTextureLibrary } from './textures';
 import { CollectibleItem, StoryLandmark } from '../types/game';
 
@@ -282,6 +283,122 @@ export interface EdibleSeaweedPatch {
 /**
  * Multi-Part Textured Edible Sea-Lettuce & Ribbon Kelp Patch for Turtles to Munch
  */
+// ---------------------------------------------------------------------------
+// Coral shapes. Two simple forms shared by every coral in the world, so the reef
+// reads as coral without adding draw calls: a lumpy "brain coral" mound and a
+// cluster of stubby branches. Colour comes from each instance.
+// ---------------------------------------------------------------------------
+let brainCoralGeometry: THREE.BufferGeometry | null = null;
+let branchCoralGeometry: THREE.BufferGeometry | null = null;
+let coralSurfaceTexture: THREE.CanvasTexture | null = null;
+
+/** Repeatable pseudo-random number in 0..1, so corals look the same on every visit. */
+const coralRand = (n: number) => {
+  const v = Math.sin(n * 91.7 + 4.1) * 43758.5453;
+  return v - Math.floor(v);
+};
+
+/** Rounded mound with folds, sitting on the seabed (base at y = 0, about 0.9 tall). */
+export function getBrainCoralGeometry(): THREE.BufferGeometry {
+  if (brainCoralGeometry) return brainCoralGeometry;
+  const geo = new THREE.SphereGeometry(0.8, 26, 14, 0, Math.PI * 2, 0, Math.PI / 2);
+  const pos = geo.attributes.position;
+  const dir = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    dir.fromBufferAttribute(pos, i);
+    const length = dir.length() || 1;
+    dir.divideScalar(length);
+    const folds =
+      Math.sin(dir.x * 7.0 + 1.3) * Math.cos(dir.z * 6.1) * 0.1 +
+      Math.sin(dir.y * 9.0 + dir.x * 4.0 + dir.z * 3.0) * 0.06;
+    const r = length * (1 + folds);
+    pos.setXYZ(i, dir.x * r, dir.y * r * 1.12, dir.z * r);
+  }
+  geo.computeVertexNormals();
+  brainCoralGeometry = geo;
+  return geo;
+}
+
+/** A clump of rounded branches reaching up and out from one base (about 1.5 tall). */
+export function getBranchCoralGeometry(): THREE.BufferGeometry {
+  if (branchCoralGeometry) return branchCoralGeometry;
+  const parts: THREE.BufferGeometry[] = [];
+  const base = new THREE.SphereGeometry(0.34, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+  base.scale(1.25, 0.6, 1.25);
+  parts.push(base);
+  const branchCount = 9;
+  for (let b = 0; b < branchCount; b++) {
+    const height = b === 0 ? 1.25 : 0.7 + coralRand(b) * 0.65;
+    const branch = new THREE.CapsuleGeometry(0.1 + coralRand(b + 20) * 0.04, height, 3, 7);
+    branch.translate(0, height / 2 + 0.05, 0);
+    if (b > 0) {
+      // Lean outward, each in its own direction around the clump.
+      branch.rotateZ(0.3 + coralRand(b + 40) * 0.45);
+      branch.rotateY((b / (branchCount - 1)) * Math.PI * 2 + coralRand(b + 60) * 0.5);
+      // A short side shoot partway up every other branch.
+      if (b % 2 === 0) {
+        const shoot = new THREE.CapsuleGeometry(0.075, 0.38, 3, 6);
+        shoot.translate(0, 0.19, 0);
+        shoot.rotateZ(-0.9);
+        shoot.translate(0, height * 0.55, 0);
+        shoot.rotateZ(0.3 + coralRand(b + 40) * 0.45);
+        shoot.rotateY((b / (branchCount - 1)) * Math.PI * 2 + coralRand(b + 60) * 0.5);
+        parts.push(shoot);
+      }
+    }
+    parts.push(branch);
+  }
+  const merged = mergeGeometries(parts);
+  parts.forEach((part) => part.dispose());
+  merged.computeVertexNormals();
+  branchCoralGeometry = merged;
+  return merged;
+}
+
+/** Pale surface with darker winding grooves and pores; tinted by each coral's colour. */
+export function getCoralSurfaceTexture(): THREE.CanvasTexture {
+  if (coralSurfaceTexture) return coralSurfaceTexture;
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  ctx.fillStyle = '#f6f6f6';
+  ctx.fillRect(0, 0, size, size);
+  ctx.strokeStyle = '#a9a9a9';
+  ctx.lineWidth = 5;
+  ctx.lineCap = 'round';
+  // Winding grooves. Each line is drawn at three horizontal offsets so it tiles.
+  for (let row = 0; row < 9; row++) {
+    for (const shift of [-size, 0, size]) {
+      ctx.beginPath();
+      for (let x = 0; x <= size; x += 4) {
+        const y =
+          row * (size / 9) +
+          14 +
+          Math.sin((x / size) * Math.PI * 2 * 3 + row * 1.9) * 9 +
+          Math.sin((x / size) * Math.PI * 2 * 7 + row * 0.7) * 4;
+        if (x === 0) ctx.moveTo(x + shift, y);
+        else ctx.lineTo(x + shift, y);
+      }
+      ctx.stroke();
+    }
+  }
+  ctx.fillStyle = '#bdbdbd';
+  for (let d = 0; d < 260; d++) {
+    ctx.beginPath();
+    ctx.arc(coralRand(d) * size, coralRand(d + 500) * size, 1.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(2, 2);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  coralSurfaceTexture = texture;
+  return texture;
+}
+
 const NEAR_CAMERA_FADE_GLSL = `
   {
     // Dissolve the parts of a leaf that sit right against the camera lens,
@@ -831,6 +948,52 @@ export function updateCollectibleFade(cObj: CollectibleObject3D, opacity: number
  * - Foremast & Mainmast with Crow's Nest Lookout, Rope Shroud Rigging, & Tattered Sails
  * - Multi-fluke Admiralty Iron Anchor + Anchor Chain & Living Coral Encrustations
  */
+/**
+ * Shape of a shipwreck hull in the wreck's own coordinates (before it is placed, turned
+ * and tilted on the seabed). u runs 0 at the stern to 1 at the bow; g runs 0 at the keel
+ * to 1 at the gunwale. The drawing code and the collision code both read from here, so
+ * the walls a turtle bumps into are the walls it sees.
+ */
+export const SHIP_HULL = {
+  sternZ: -7.95,
+  length: 16.6,
+  deckY: 2.65,
+  deckFrom: 0.24,
+  deckTo: 0.93,
+  /** The fallen-in part of the deck: x from, x to, z from, z to. */
+  deckCollapse: [0.4, 2.3, -1.2, 1.6] as [number, number, number, number],
+  /** Stern cabin block: half width, bottom, top, z from, z to. */
+  cabin: [1.95, 1.2, 4.2, -8.0, -3.8] as [number, number, number, number, number],
+  halfBreadth(u: number): number {
+    return u < 0.4
+      ? 2.5 * (0.78 + 0.22 * Math.sin((u / 0.4) * (Math.PI / 2)))
+      : 2.5 * Math.pow(Math.max(0, Math.cos(((u - 0.4) / 0.6) * (Math.PI / 2))), 0.75);
+  },
+  sheerHeight(u: number): number {
+    const d = (u - 0.45) / 0.55;
+    return 2.95 + d * d * (u < 0.45 ? 1.5 : 1.0);
+  },
+  keelRise(u: number): number {
+    return u > 0.78 ? Math.pow((u - 0.78) / 0.22, 2) * 1.9 : 0;
+  },
+  /** How far up the side (0 keel, 1 gunwale) a given height is at station u. */
+  girthAtHeight(u: number, y: number): number {
+    const y0 = SHIP_HULL.keelRise(u);
+    const t = THREE.MathUtils.clamp((y - y0) / (SHIP_HULL.sheerHeight(u) - y0), 0, 1);
+    return Math.acos(1 - t) / (Math.PI / 2);
+  },
+  /** Half width of the hull at station u and girth g. */
+  widthAt(u: number, g: number): number {
+    return SHIP_HULL.halfBreadth(u) * Math.pow(Math.sin(g * (Math.PI / 2)), 0.72);
+  },
+  isBreached(u: number, g: number, side: number): boolean {
+    if (side === 1 && u > 0.37 && u < 0.57 && g > 0.3) return true; // swim-through
+    if (side === -1 && u > 0.6 && u < 0.7 && g > 0.5) return true; // torn bow quarter
+    if (side === -1 && u > 0.2 && u < 0.27 && g > 0.25 && g < 0.6) return true; // shot hole
+    return g > 0.86 && Math.sin(u * 41 + side * 1.7) > 0.25; // ragged, rotted gunwale
+  },
+};
+
 export function createShipwreck(
   position: [number, number, number],
   rotY: number,
@@ -878,34 +1041,19 @@ export function createShipwreck(
   // widest amidships and drawn in to a point at the bow. The shell is built station by
   // station along the length, then broken open in places so it reads as a wreck: a large
   // breach to swim through on one side, a smaller one on the other, and a ragged top edge.
-  const HULL_STERN_Z = -7.95;
-  const HULL_LENGTH = 16.6;
+  const HULL_STERN_Z = SHIP_HULL.sternZ;
+  const HULL_LENGTH = SHIP_HULL.length;
   const STATIONS = 28;
   const GIRTH_STEPS = 9;
-
-  const halfBreadth = (u: number) =>
-    u < 0.4
-      ? 2.5 * (0.78 + 0.22 * Math.sin((u / 0.4) * (Math.PI / 2)))
-      : 2.5 * Math.pow(Math.max(0, Math.cos(((u - 0.4) / 0.6) * (Math.PI / 2))), 0.75);
-  const sheerHeight = (u: number) => {
-    const d = (u - 0.45) / 0.55;
-    return 2.95 + d * d * (u < 0.45 ? 1.5 : 1.0);
-  };
-  const keelRise = (u: number) => (u > 0.78 ? Math.pow((u - 0.78) / 0.22, 2) * 1.9 : 0);
+  const { halfBreadth, sheerHeight, keelRise, isBreached } = SHIP_HULL;
   /** Point on the hull skin: u runs stern to bow, g runs keel to gunwale, side is -1 or 1. */
   const hullPoint = (u: number, g: number, side: number, out = new THREE.Vector3()) => {
     const y0 = keelRise(u);
     return out.set(
-      side * halfBreadth(u) * Math.pow(Math.sin(g * (Math.PI / 2)), 0.72),
+      side * SHIP_HULL.widthAt(u, g),
       y0 + (sheerHeight(u) - y0) * (1 - Math.cos(g * (Math.PI / 2))),
       HULL_STERN_Z + u * HULL_LENGTH
     );
-  };
-  const isBreached = (u: number, g: number, side: number) => {
-    if (side === 1 && u > 0.37 && u < 0.57 && g > 0.3) return true; // swim-through
-    if (side === -1 && u > 0.6 && u < 0.7 && g > 0.5) return true; // torn bow quarter
-    if (side === -1 && u > 0.2 && u < 0.27 && g > 0.25 && g < 0.6) return true; // shot hole
-    return g > 0.86 && Math.sin(u * 41 + side * 1.7) > 0.25; // ragged, rotted gunwale
   };
 
   const hullPositions: number[] = [];
@@ -939,6 +1087,12 @@ export function createShipwreck(
   hullGeo.computeVertexNormals();
   const hullSkinMat = hullMat.clone();
   hullSkinMat.side = THREE.DoubleSide;
+  // Timbers dissolve right in front of the lens, so swimming inside the hull stays visible.
+  [hullMat, hullSkinMat, trimMat, sailMat].forEach((mat) => {
+    mat.onBeforeCompile = (shader) => {
+      shader.fragmentShader = withNearCameraFade(shader.fragmentShader);
+    };
+  });
   const hullSkin = new THREE.Mesh(hullGeo, hullSkinMat);
   hullSkin.castShadow = true;
   hullSkin.receiveShadow = true;
@@ -996,17 +1150,14 @@ export function createShipwreck(
   wreck.add(rudder);
 
   // 2. Main deck, cut to the hull's outline so it never sticks out through the sides.
-  const DECK_Y = 2.65;
-  const deckFrom = 0.24;
-  const deckTo = 0.93;
+  const DECK_Y = SHIP_HULL.deckY;
+  const deckFrom = SHIP_HULL.deckFrom;
+  const deckTo = SHIP_HULL.deckTo;
   const deckOutline = new THREE.Shape();
   const deckSteps = 18;
-  const deckHalfWidth = (u: number) => {
-    // Width of the hull at deck height, a touch inside the planking.
-    const y0 = keelRise(u);
-    const g = (Math.acos(1 - (DECK_Y - y0) / (sheerHeight(u) - y0)) / (Math.PI / 2)) || 0;
-    return halfBreadth(u) * Math.pow(Math.sin(Math.min(1, g) * (Math.PI / 2)), 0.72) * 0.96;
-  };
+  // Width of the hull at deck height, a touch inside the planking.
+  const deckHalfWidth = (u: number) =>
+    SHIP_HULL.widthAt(u, SHIP_HULL.girthAtHeight(u, DECK_Y)) * 0.96;
   for (let k = 0; k <= deckSteps; k++) {
     const u = deckFrom + ((deckTo - deckFrom) * k) / deckSteps;
     const z = HULL_STERN_Z + u * HULL_LENGTH;
@@ -1020,11 +1171,13 @@ export function createShipwreck(
   deckOutline.closePath();
   // A jagged gap where the deck has fallen in above the big breach.
   const collapse = new THREE.Path();
-  collapse.moveTo(0.5, -0.6);
-  collapse.lineTo(2.1, -0.9);
-  collapse.lineTo(2.2, 0.9);
-  collapse.lineTo(1.2, 1.3);
-  collapse.lineTo(0.7, 0.4);
+  const [holeX0, holeX1, holeZ0, holeZ1] = SHIP_HULL.deckCollapse;
+  collapse.moveTo(holeX0, holeZ0 + 0.5);
+  collapse.lineTo(holeX0 + 0.9, holeZ0);
+  collapse.lineTo(holeX1, holeZ0 + 0.3);
+  collapse.lineTo(holeX1 - 0.2, holeZ1 - 0.4);
+  collapse.lineTo(holeX0 + 0.8, holeZ1);
+  collapse.lineTo(holeX0 + 0.2, holeZ1 - 0.9);
   collapse.closePath();
   deckOutline.holes.push(collapse);
   const deckGeo = new THREE.ExtrudeGeometry(deckOutline, { depth: 0.16, bevelEnabled: false });
@@ -1198,12 +1351,18 @@ export function createShipwreck(
   const coralColors = [0xf43f5e, 0xfb923c, 0x2dd4bf, 0xc084fc];
   for (let c = 0; c < 8; c++) {
     const coralCluster = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(0.45 + (c % 3) * 0.18, 1),
+      c % 3 === 2 ? getBranchCoralGeometry() : getBrainCoralGeometry(),
       new THREE.MeshStandardMaterial({
         color: coralColors[c % coralColors.length],
-        roughness: 0.5,
+        map: getCoralSurfaceTexture(),
+        bumpMap: getCoralSurfaceTexture(),
+        bumpScale: 0.05,
+        roughness: 0.6,
       })
     );
+    coralCluster.scale.setScalar(0.6 + (c % 3) * 0.22);
+    // Growing out from the planking rather than sitting upright in mid-water.
+    coralCluster.rotation.z = (c % 2 === 0 ? -1 : 1) * 0.9;
     coralCluster.position.set(
       (c % 2 === 0 ? 1 : -1) * (1.8 + (c % 3) * 0.3),
       1.2 + (c % 4) * 0.55,

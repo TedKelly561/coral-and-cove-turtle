@@ -27,6 +27,7 @@ import {
   resolveSolidObstacles,
   resolveSoftObstacles,
   grottoDepthFactor,
+  isInsideWreck,
   sampleFootprintGround,
 } from '../three/world';
 import { TurtleBubbleTrailSystem } from '../three/bubbleTrail';
@@ -490,6 +491,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     let frameId = 0;
     let isDisposed = false;
     let camHeldUnderwater = false;
+    let wreckCamBlend = 0;
     let perfSeconds = 0;
     let perfFrames = 0;
     let perfWarmedUp = false;
@@ -1430,8 +1432,24 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
           pullDist = 0;
         }
 
-        const pullBack = THREE.MathUtils.clamp(8.5 + pullDist * 0.58, 8.5, 26);
-        const liftY = THREE.MathUtils.clamp(2.6 + pullDist * 0.22, 2.6, 9.5);
+        // Inside a shipwreck the camera tucks in close behind the turtle, so it is inside
+        // the hull too and the planking is not between the lens and the turtle.
+        wreckCamBlend = THREE.MathUtils.damp(
+          wreckCamBlend,
+          isInsideWreck(centerPoint) ? 1 : 0,
+          3.5,
+          dt
+        );
+        const pullBack = THREE.MathUtils.lerp(
+          THREE.MathUtils.clamp(8.5 + pullDist * 0.58, 8.5, 26),
+          3.4,
+          wreckCamBlend
+        );
+        const liftY = THREE.MathUtils.lerp(
+          THREE.MathUtils.clamp(2.6 + pullDist * 0.22, 2.6, 9.5),
+          0.75,
+          wreckCamBlend
+        );
 
         _vec3A
           .set(0, liftY, -pullBack)
