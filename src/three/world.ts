@@ -20,6 +20,10 @@ import {
   GROTTO_RING,
   withNearCameraFade,
   createShipwreck,
+  getBrainCoralGeometry,
+  getBranchCoralGeometry,
+  getCoralSurfaceTexture,
+  SHIP_HULL,
   createSpottedEagleRay,
   createStaghornCoral,
   createStarfish,
@@ -51,14 +55,6 @@ export const SOLID_OBSTACLES: ObstacleCollider[] = [
   { x: -3.2, z: 30.8, radius: 2.4, minY: -0.5, maxY: 16.0, name: 'Lighthouse Tower' },
   // Hatchery Sanctuary Pergola Shelter
   { x: 3.4, z: 25.8, radius: 2.6, minY: -0.5, maxY: 6.0, name: 'Hatchery Shelter' },
-  // Starlight Galleon Shipwreck (3 overlapping capsules along its rotated hull spine)
-  { x: -34.98, z: -21.77, radius: 2.7, minY: -14.0, maxY: -2.0, name: 'Galleon Bow' },
-  { x: -38.0, z: -26.0, radius: 2.9, minY: -14.0, maxY: -2.0, name: 'Galleon Midship' },
-  { x: -41.02, z: -30.23, radius: 2.9, minY: -14.0, maxY: -1.5, name: 'Galleon Stern Castle' },
-  // Coral Brigantine Shipwreck (3 overlapping capsules along its rotated hull spine)
-  { x: 26.4, z: -38.8, radius: 2.5, minY: -14.0, maxY: -2.5, name: 'Brigantine Bow' },
-  { x: 30.0, z: -42.0, radius: 2.7, minY: -14.0, maxY: -2.5, name: 'Brigantine Midship' },
-  { x: 33.6, z: -45.2, radius: 2.7, minY: -14.0, maxY: -2.0, name: 'Brigantine Stern Castle' },
 ];
 
 /** Rounded scenery a turtle should bump and glide over (coral boulders). Rebuilt with the world. */
@@ -93,6 +89,108 @@ export function resolveSoftObstacles(pos: THREE.Vector3, turtleRadius: number, d
   }
 }
 
+/** A placed shipwreck: how to get from world space into the hull's own space and back. */
+interface WreckPlacement {
+  toLocal: THREE.Matrix4;
+  toWorld: THREE.Matrix4;
+  scale: number;
+}
+const WRECKS: WreckPlacement[] = [];
+const _wreckLocal = new THREE.Vector3();
+
+function registerWreck(wreck: THREE.Group): void {
+  wreck.updateMatrixWorld(true);
+  WRECKS.push({
+    toWorld: wreck.matrixWorld.clone(),
+    toLocal: wreck.matrixWorld.clone().invert(),
+    scale: wreck.scale.x,
+  });
+}
+
+/** Station along the hull, 0 at the stern to 1 at the bow, for a point in hull space. */
+const hullStation = (z: number) => (z - SHIP_HULL.sternZ) / SHIP_HULL.length;
+
+/** True when a world position is inside a wreck's hull, below its deck. */
+export function isInsideWreck(pos: THREE.Vector3): boolean {
+  for (const wreck of WRECKS) {
+    _wreckLocal.copy(pos).applyMatrix4(wreck.toLocal);
+    const u = hullStation(_wreckLocal.z);
+    if (u < 0.03 || u > 0.95 || _wreckLocal.y > SHIP_HULL.deckY) continue;
+    const width = SHIP_HULL.widthAt(u, SHIP_HULL.girthAtHeight(u, _wreckLocal.y));
+    if (Math.abs(_wreckLocal.x) < width) return true;
+  }
+  return false;
+}
+
+/**
+ * Shipwreck collision that follows the real hull: planked sides, the deck and the stern
+ * cabin are solid, while the breaches and the fallen-in deck are open, so a turtle can
+ * swim in through a hole, explore under the deck and come out again.
+ */
+function resolveWreckHulls(pos: THREE.Vector3, turtleRadius: number): void {
+  for (const wreck of WRECKS) {
+    const local = _wreckLocal.copy(pos).applyMatrix4(wreck.toLocal);
+    const r = (turtleRadius / wreck.scale) * 0.7;
+    const u = hullStation(local.z);
+    if (u < -0.08 || u > 1.05) continue;
+    const uc = THREE.MathUtils.clamp(u, 0, 1);
+    const sheer = SHIP_HULL.sheerHeight(uc);
+    if (local.y > sheer + r + 1.4 || local.y < SHIP_HULL.keelRise(uc) - r) continue;
+    let moved = false;
+
+    // Stern cabin: a solid block. Leave by the nearest face (never downward).
+    const [cabinHalfW, cabinBottom, cabinTop, cabinZ0, cabinZ1] = SHIP_HULL.cabin;
+    if (
+      Math.abs(local.x) < cabinHalfW + r &&
+      local.y > cabinBottom - r &&
+      local.y < cabinTop + r &&
+      local.z > cabinZ0 - r &&
+      local.z < cabinZ1 + r
+    ) {
+      const outX = cabinHalfW + r - Math.abs(local.x);
+      const outUp = cabinTop + r - local.y;
+      const outFore = cabinZ1 + r - local.z;
+      const outAft = local.z - (cabinZ0 - r);
+      const least = Math.min(outX, outUp, outFore, outAft);
+      if (least === outX) local.x = Math.sign(local.x || 1) * (cabinHalfW + r);
+      else if (least === outUp) local.y = cabinTop + r;
+      else if (least === outFore) local.z = cabinZ1 + r;
+      else local.z = cabinZ0 - r;
+      moved = true;
+    }
+
+    // Planked sides, wherever they are not broken open.
+    if (local.y <= sheer) {
+      const g = SHIP_HULL.girthAtHeight(uc, local.y);
+      const side = local.x >= 0 ? 1 : -1;
+      const wall = SHIP_HULL.widthAt(uc, g);
+      const offset = Math.abs(local.x) - wall;
+      if (Math.abs(offset) < r && u >= 0 && !SHIP_HULL.isBreached(uc, g, side)) {
+        // Back to the side the turtle is on; if the hull is too narrow there, outside.
+        const inside = offset < 0 && wall - r > 0.35;
+        local.x = side * (inside ? wall - r : wall + r);
+        moved = true;
+      }
+    }
+
+    // Deck: a floor from above and a ceiling from below, except where it has fallen in.
+    if (uc > SHIP_HULL.deckFrom && uc < SHIP_HULL.deckTo) {
+      const deckWidth = SHIP_HULL.widthAt(uc, SHIP_HULL.girthAtHeight(uc, SHIP_HULL.deckY));
+      const [holeX0, holeX1, holeZ0, holeZ1] = SHIP_HULL.deckCollapse;
+      const inHole =
+        local.x > holeX0 && local.x < holeX1 && local.z > holeZ0 && local.z < holeZ1;
+      const gap = local.y - SHIP_HULL.deckY;
+      const reach = r * 0.6;
+      if (!inHole && Math.abs(local.x) < deckWidth && Math.abs(gap) < reach) {
+        local.y = SHIP_HULL.deckY + (gap >= 0 ? reach : -reach);
+        moved = true;
+      }
+    }
+
+    if (moved) pos.copy(local).applyMatrix4(wreck.toWorld);
+  }
+}
+
 /**
  * The grotto's rock ring as one smooth wall. A turtle touching it is eased back to the
  * nearer side, so it slides along the rock to an opening instead of wedging between spires.
@@ -121,6 +219,7 @@ function resolveGrottoWall(pos: THREE.Vector3, turtleRadius: number): void {
 
 export function resolveSolidObstacles(pos: THREE.Vector3, turtleRadius: number): void {
   resolveGrottoWall(pos, turtleRadius);
+  resolveWreckHulls(pos, turtleRadius);
   for (const obs of SOLID_OBSTACLES) {
     if (pos.y >= obs.minY && pos.y <= obs.maxY) {
       const dx = pos.x - obs.x;
@@ -657,10 +756,13 @@ export function buildOceanWorld(
   const galleonY = groundHeightAt(-38, -26);
   const galleonWreck = createShipwreck([-38, galleonY - 0.2, -26], 0.62, 1.15, textures);
   scene.add(galleonWreck);
+  WRECKS.length = 0;
+  registerWreck(galleonWreck);
 
   const brigantineY = groundHeightAt(30, -42);
   const brigantineWreck = createShipwreck([30, brigantineY - 0.2, -42], -0.85, 0.95, textures);
   scene.add(brigantineWreck);
+  registerWreck(brigantineWreck);
 
   // 5. Textured Botanical Seaweed & Giant Kelp Forest (InstancedMesh with veined Kelp Albedo & Bump)
   const kelpCount = 240;
@@ -767,8 +869,6 @@ export function buildOceanWorld(
 
   // 6. Vibrant Coral Reef Formations with Procedural Current-Swaying Vertex Shader
   const coralCount = 160;
-  const coralGeo = new THREE.DodecahedronGeometry(0.75, 1);
-  coralGeo.translate(0, 0.5, 0);
 
   const coralUniforms = {
     uTime: { value: 0 },
@@ -776,10 +876,13 @@ export function buildOceanWorld(
 
   const coralMaterial = new THREE.MeshStandardMaterial({
     color: 0xffffff,
+    map: getCoralSurfaceTexture(),
+    bumpMap: getCoralSurfaceTexture(),
+    bumpScale: 0.06,
     emissive: 0x0ea5e9,
     emissiveIntensity: 0.08,
-    roughness: 0.55,
-    metalness: 0.08,
+    roughness: 0.62,
+    metalness: 0.04,
   });
 
   coralMaterial.onBeforeCompile = (shader) => {
@@ -808,31 +911,71 @@ export function buildOceanWorld(
 
   palmCollidersAdded = true;
   SOFT_OBSTACLES.length = 0;
-  const coralInstanced = new THREE.InstancedMesh(coralGeo, coralMaterial, coralCount);
+  // Two coral forms, each drawn as one instanced mesh: rounded brain-coral mounds and
+  // clumps of branching coral. Every third coral is a branching one.
+  const branchTotal = Math.floor(coralCount / 3);
+  const moundCoral = new THREE.InstancedMesh(
+    getBrainCoralGeometry(),
+    coralMaterial,
+    coralCount - branchTotal
+  );
+  const branchCoral = new THREE.InstancedMesh(getBranchCoralGeometry(), coralMaterial, branchTotal);
   const coralPalette = [0xf43f5e, 0xfb923c, 0xa855f7, 0xec4899, 0x2dd4bf, 0xfacc15];
+  const wreckCentres: [number, number][] = [
+    [-38, -26],
+    [30, -42],
+  ];
+  let moundIndex = 0;
+  let branchIndex = 0;
 
   for (let i = 0; i < coralCount; i++) {
     const angle = Math.random() * Math.PI * 2;
     const radius = 8 + Math.random() * 58;
-    const cx = Math.cos(angle) * radius;
-    const cz = Math.sin(angle) * radius - 8;
+    let cx = Math.cos(angle) * radius;
+    let cz = Math.sin(angle) * radius - 8;
+    // Keep the shipwrecks clear, so nothing grows in the way of swimming through them.
+    wreckCentres.forEach(([wx, wz]) => {
+      const d = Math.hypot(cx - wx, cz - wz);
+      if (d < 11) {
+        const push = 11 / Math.max(d, 0.01);
+        cx = wx + (cx - wx) * push;
+        cz = wz + (cz - wz) * push;
+      }
+    });
     const cy = groundHeightAt(cx, cz);
+    const isBranch = i % 3 === 2 && branchIndex < branchTotal;
 
-    _dummy.position.set(cx, Math.min(-1.2, cy), cz);
-    _dummy.rotation.set(0, Math.random() * Math.PI, 0);
+    // Set a little into the sand so the base never floats on a slope.
+    _dummy.position.set(cx, Math.min(-1.2, cy) - 0.08, cz);
+    _dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
     const s = 0.6 + Math.random() * 1.35;
-    _dummy.scale.set(s * 1.15, s * (0.65 + Math.random() * 0.7), s);
+    if (isBranch) _dummy.scale.set(s * 0.85, s * (0.8 + Math.random() * 0.4), s * 0.85);
+    else _dummy.scale.set(s * 1.15, s * (0.65 + Math.random() * 0.6), s);
     _dummy.updateMatrix();
-    coralInstanced.setMatrixAt(i, _dummy.matrix);
-    SOFT_OBSTACLES.push({ x: cx, y: _dummy.position.y, z: cz, radius: 0.75 * s * 0.8 });
+    SOFT_OBSTACLES.push({
+      x: cx,
+      y: _dummy.position.y,
+      z: cz,
+      radius: 0.75 * s * (isBranch ? 0.6 : 0.8),
+    });
 
     _color.setHex(coralPalette[i % coralPalette.length]);
-    coralInstanced.setColorAt(i, _color);
+    if (isBranch) {
+      branchCoral.setMatrixAt(branchIndex, _dummy.matrix);
+      branchCoral.setColorAt(branchIndex, _color);
+      branchIndex += 1;
+    } else {
+      moundCoral.setMatrixAt(moundIndex, _dummy.matrix);
+      moundCoral.setColorAt(moundIndex, _color);
+      moundIndex += 1;
+    }
   }
-  coralInstanced.instanceMatrix.needsUpdate = true;
-  if (coralInstanced.instanceColor) coralInstanced.instanceColor.needsUpdate = true;
-  coralInstanced.computeBoundingSphere();
-  scene.add(coralInstanced);
+  [moundCoral, branchCoral].forEach((mesh) => {
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    scene.add(mesh);
+  });
 
   // 7. Underwater Sunbeam God-Rays
   const sunBeamsGroup = new THREE.Group();
