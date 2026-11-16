@@ -32,4 +32,8 @@ The game runs without any keys. To switch on "Google Drive Saves & Postcards", c
 
 ## Hosting
 
-Cloudflare builds and publishes the game from `main` using `wrangler.jsonc`. The repo uses an npm lockfile (`package-lock.json`) because Cloudflare's build image could not read the newer `bun.lock` format.
+Play it at **https://coralcove.tedbuilds.dev**. On a tablet or phone, open that address in Chrome and choose "Add to Home screen" for a full-screen app with touch controls.
+
+Cloudflare builds and publishes the game from `main` using `wrangler.jsonc`; every merge goes live a couple of minutes later. The custom domain is attached to the `coral-cove` Worker in the Cloudflare dashboard, not in `wrangler.jsonc`. The original address, `coral-cove.tseay11.workers.dev`, still works.
+
+The repo uses an npm lockfile (`package-lock.json`) because Cloudflare's build image could not read the newer `bun.lock` format.
