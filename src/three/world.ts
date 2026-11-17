@@ -19,7 +19,11 @@ import {
   createShipwreck,
   getBrainCoralGeometry,
   getBranchCoralGeometry,
+  createDriftwood,
+  getBeachShellGeometry,
+  getFlowerGeometry,
   getPebbleGeometry,
+  getRockGeometry,
   getSeagrassGeometry,
   getTableCoralGeometry,
   getTubeSpongeGeometry,
@@ -573,6 +577,61 @@ export function buildOceanWorld(
     metalness: 0.04,
   });
 
+  // Light rippling over the seabed (the bright net the surface casts in shallow water)
+  // and a line of foam washing along the shore, both drawn in the sand's own shader.
+  const terrainUniforms = { uTime: { value: 0 }, uCaustics: { value: 1 } };
+  terrainMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = terrainUniforms.uTime;
+    shader.uniforms.uCaustics = terrainUniforms.uCaustics;
+    shader.vertexShader =
+      `varying vec3 vSeabedPos;\n` +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `
+        #include <begin_vertex>
+        vSeabedPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        `
+      );
+    shader.fragmentShader =
+      `uniform float uTime;\nuniform float uCaustics;\nvarying vec3 vSeabedPos;\n` +
+      shader.fragmentShader
+        .replace(
+          '#include <color_fragment>',
+          `
+          #include <color_fragment>
+          {
+            // Foam: a thin band at the waterline that slides up and down the beach.
+            float wash = sin(uTime * 0.9 + vSeabedPos.x * 0.35 + vSeabedPos.z * 0.27) * 0.07;
+            float band = 1.0 - smoothstep(0.0, 0.16, abs(vSeabedPos.y - 0.04 - wash));
+            float lace = 0.55 + 0.45 * sin(vSeabedPos.x * 3.1 + vSeabedPos.z * 2.3 + uTime * 1.8);
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), band * lace * 0.7);
+            // Sand just above the water stays dark and wet.
+            float wet = (1.0 - smoothstep(0.05, 0.55, vSeabedPos.y)) * step(0.0, vSeabedPos.y);
+            diffuseColor.rgb *= 1.0 - wet * 0.22;
+          }
+          `
+        )
+        .replace(
+          '#include <emissivemap_fragment>',
+          `
+          #include <emissivemap_fragment>
+          {
+            vec2 p = vSeabedPos.xz * 0.5;
+            float t = uTime * 0.55;
+            float a = sin(p.x * 1.7 + sin(p.y * 1.3 + t) * 1.6 + t);
+            float b = sin(p.y * 1.9 + sin(p.x * 1.1 - t * 0.8) * 1.7 - t * 0.7);
+            float c = sin((p.x + p.y) * 1.2 + sin((p.x - p.y) * 0.9 + t * 0.5) * 1.4);
+            float net = pow(1.0 - abs(a * 0.5 + b * 0.5), 7.0) + pow(1.0 - abs(b * 0.5 + c * 0.5), 7.0);
+            // Only under water, strongest in the shallows and gone in the deep.
+            float lit = smoothstep(0.0, -0.9, vSeabedPos.y) * smoothstep(-17.0, -6.0, vSeabedPos.y);
+            // No sunlight reaches the floor of the grotto, so the net fades out there.
+            float open = smoothstep(9.0, 21.0, distance(vSeabedPos.xz, vec2(${GROTTO_CENTER.x}.0, ${GROTTO_CENTER.z}.0)));
+            totalEmissiveRadiance += vec3(0.72, 0.95, 0.88) * net * 0.3 * lit * open * uCaustics;
+          }
+          `
+        );
+  };
+
   const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
   terrainMesh.receiveShadow = true;
   scene.add(terrainMesh);
@@ -623,6 +682,24 @@ export function buildOceanWorld(
         float mistCalm = mix(1.0, 0.45, clamp(1.0 - abs(uWeatherMode - 2.0), 0.0, 1.0));
 
         transformed.y += baseWave * mistCalm + rainRipple;
+        vSurfacePos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        `
+      );
+    // Sparkle: thin bright streaks that drift across the surface.
+    shader.vertexShader = `varying vec3 vSurfacePos;\n` + shader.vertexShader;
+    shader.fragmentShader =
+      `uniform float uTime;\nvarying vec3 vSurfacePos;\n` +
+      shader.fragmentShader.replace(
+        '#include <emissivemap_fragment>',
+        `
+        #include <emissivemap_fragment>
+        {
+          vec2 q = vSurfacePos.xz * 0.42;
+          float s1 = sin(q.x * 2.3 + sin(q.y * 1.7 + uTime * 0.7) * 1.5 + uTime * 0.9);
+          float s2 = sin(q.y * 2.7 + sin(q.x * 1.3 - uTime * 0.6) * 1.6 - uTime * 0.8);
+          float glint = pow(1.0 - abs(s1 * 0.5 + s2 * 0.5), 14.0);
+          totalEmissiveRadiance += vec3(0.85, 0.97, 1.0) * glint * 0.35;
+        }
         `
       );
   };
@@ -732,6 +809,136 @@ export function buildOceanWorld(
       const palm = createCoconutPalm(cfg.x, gy - 0.1, cfg.z, cfg.h, cfg.lean, cfg.dir, textures);
       scene.add(palm);
     }
+  });
+
+  // 3B. Island detail: grass and flowers on the high ground, shells along the tideline,
+  // boulders and driftwood on the beaches.
+  const islands: [number, number, number][] = [
+    [0, 34, 30],
+    [-58, -8, 22],
+    [56, -14, 20],
+  ];
+  // Things that must stay clear: the lighthouse, the hatchery shelter and the palm trunks.
+  const keepOff: [number, number, number][] = [
+    [-3.2, 30.8, 3.4],
+    [3.4, 25.8, 3.8],
+    ...palmConfigs.map((cfg): [number, number, number] => [cfg.x, cfg.z, 0.9]),
+  ];
+  const isClear = (x: number, z: number) =>
+    keepOff.every(([kx, kz, kr]) => Math.hypot(x - kx, z - kz) > kr);
+  /** Random spots on the islands whose ground height is within a band. */
+  const islandSpots = (count: number, minY: number, maxY: number): [number, number, number][] => {
+    const spots: [number, number, number][] = [];
+    for (let attempt = 0; attempt < count * 40 && spots.length < count; attempt++) {
+      const [ix, iz, ir] = islands[attempt % islands.length];
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * ir;
+      const x = ix + Math.cos(a) * r;
+      const z = iz + Math.sin(a) * r;
+      const y = groundHeightAt(x, z);
+      if (y >= minY && y <= maxY && isClear(x, z)) spots.push([x, y, z]);
+    }
+    return spots;
+  };
+  const scatter = (
+    geometry: THREE.BufferGeometry,
+    material: THREE.Material,
+    spots: [number, number, number][],
+    tones: number[],
+    place: (spot: [number, number, number], i: number) => void
+  ) => {
+    const mesh = new THREE.InstancedMesh(geometry, material, Math.max(1, spots.length));
+    spots.forEach((spot, i) => {
+      place(spot, i);
+      _dummy.updateMatrix();
+      mesh.setMatrixAt(i, _dummy.matrix);
+      _color.setHex(tones[i % tones.length]);
+      mesh.setColorAt(i, _color);
+    });
+    mesh.count = spots.length;
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.frustumCulled = false;
+    scene.add(mesh);
+    return mesh;
+  };
+
+  // Grass: the same blades as the seagrass, in a breeze, on ground above the beach.
+  const islandGrassMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    roughness: 0.7,
+    side: THREE.DoubleSide,
+  });
+  islandGrassMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = terrainUniforms.uTime;
+    shader.vertexShader =
+      `uniform float uTime;\n` +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `
+        #include <begin_vertex>
+        float sway = clamp(transformed.y / 0.9, 0.0, 1.0);
+        transformed.x += sin(uTime * 2.4 + instanceMatrix[3][0] * 0.9 + instanceMatrix[3][2] * 0.7) * 0.09 * sway * sway;
+        `
+      );
+  };
+  scatter(
+    getSeagrassGeometry(),
+    islandGrassMat,
+    islandSpots(lightGraphics ? 320 : 520, 1.5, 20),
+    [0x65a30d, 0x84cc16, 0x4d7c0f, 0xa3e635, 0x3f9142],
+    ([x, y, z]) => {
+      _dummy.position.set(x, y - 0.02, z);
+      _dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+      const gs = 0.7 + Math.random() * 0.9;
+      _dummy.scale.set(gs * 1.3, gs * (0.7 + Math.random() * 0.5), gs * 1.3);
+    }
+  );
+  scatter(
+    getFlowerGeometry(),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.55 }),
+    islandSpots(lightGraphics ? 70 : 120, 1.7, 20),
+    [0xf43f5e, 0xfde047, 0xfb923c, 0xf9a8d4, 0xffffff, 0xc084fc],
+    ([x, y, z]) => {
+      _dummy.position.set(x, y - 0.02, z);
+      _dummy.rotation.set((Math.random() - 0.5) * 0.3, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.3);
+      _dummy.scale.setScalar(0.9 + Math.random() * 0.9);
+    }
+  );
+  scatter(
+    getBeachShellGeometry(),
+    new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      roughness: 0.45,
+      side: THREE.DoubleSide,
+    }),
+    islandSpots(lightGraphics ? 80 : 130, 0.12, 1.3),
+    [0xfde6d0, 0xfbcfe8, 0xfff7ed, 0xfed7aa, 0xe9d5ff],
+    ([x, y, z]) => {
+      _dummy.position.set(x, y + 0.015, z);
+      _dummy.rotation.set((Math.random() - 0.5) * 0.4, Math.random() * Math.PI * 2, 0);
+      _dummy.scale.setScalar(0.8 + Math.random() * 1.1);
+    }
+  );
+  scatter(
+    getRockGeometry(),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.9 }),
+    islandSpots(22, 0.3, 3.5),
+    [0x8b8f98, 0x6f7480, 0xa39b8f, 0x7c8577],
+    ([x, y, z]) => {
+      const rs = 0.6 + Math.random() * 1.5;
+      _dummy.position.set(x, y + 0.12 * rs, z);
+      _dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+      _dummy.scale.set(rs * (0.8 + Math.random() * 0.5), rs * (0.7 + Math.random() * 0.4), rs);
+    }
+  );
+  islandSpots(9, 0.25, 1.2).forEach(([x, y, z]) => {
+    const log = createDriftwood(textures, 1.6 + Math.random() * 1.6);
+    log.position.set(x, y + 0.08, z);
+    log.rotation.y = Math.random() * Math.PI * 2;
+    scene.add(log);
   });
 
   const bushGeo = new THREE.DodecahedronGeometry(0.65, 1);
@@ -1536,6 +1743,13 @@ export function buildOceanWorld(
     let newlyBefriendedId: string | null = null;
 
     waterUniforms.uTime.value = elapsed;
+    terrainUniforms.uTime.value = elapsed;
+    // Light on the seabed follows the day: bright at noon, faint by moonlight, dull in rain.
+    terrainUniforms.uCaustics.value =
+      THREE.MathUtils.lerp(1.0, 0.18, nightFactor) *
+      (weatherMood === 'gentle_rain' ? 0.45 : weatherMood === 'misty_morning' ? 0.6 : 1.0);
+    grotto.motes.rotation.y = elapsed * 0.03;
+    grotto.motes.position.y = Math.sin(elapsed * 0.4) * 0.25;
     kelpUniforms.uTime.value = elapsed;
     coralUniforms.uTime.value = elapsed;
 

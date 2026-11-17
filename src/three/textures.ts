@@ -25,9 +25,18 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): OceanTe
   // 1. Turtle Carapace Scute Pattern Generator (Mother & Baby distinct palettes)
   const buildShellTexture = (isMother: boolean, isBump: boolean): THREE.CanvasTexture => {
     const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 512;
+    canvas.width = 1024;
+    canvas.height = 1024;
     const ctx = canvas.getContext('2d')!;
+    // Drawn on a 512 grid at double resolution, so fine detail stays crisp up close.
+    ctx.scale(2, 2);
+    // Repeatable scatter for speckles, so both turtles look the same on every visit.
+    let shellSeed = isMother ? 11 : 29;
+    const shellRand = () => {
+      shellSeed += 1;
+      const v = Math.sin(shellSeed * 78.233) * 43758.5453;
+      return v - Math.floor(v);
+    };
 
     if (isBump) {
       ctx.fillStyle = '#404040';
@@ -114,8 +123,74 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): OceanTe
           ctx.stroke();
         }
       }
+
+      // Growth rings: each scute is laid down in layers, like tree rings.
+      [0.82, 0.66, 0.5, 0.34].forEach((k, ringIdx) => {
+        ctx.beginPath();
+        for (let i = 0; i < 6; i++) {
+          const angle = (i * Math.PI) / 3 + Math.PI / 6;
+          const px = cx + Math.cos(angle) * r * k;
+          const py = cy + Math.sin(angle) * r * 0.88 * k;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
+        ctx.lineWidth = isBump ? 1.6 : 1.1;
+        ctx.strokeStyle = isBump
+          ? '#5a5a5a'
+          : isMother
+            ? `rgba(20, 45, 32, ${0.5 - ringIdx * 0.08})`
+            : `rgba(18, 62, 54, ${0.45 - ringIdx * 0.07})`;
+        ctx.stroke();
+      });
+
+      // Mottling inside the scute: darker flecks and a few pale ones.
+      if (!isBump) {
+        for (let m = 0; m < 26; m++) {
+          const ma = shellRand() * Math.PI * 2;
+          const md = Math.sqrt(shellRand()) * r * 0.8;
+          ctx.fillStyle =
+            m % 5 === 0
+              ? 'rgba(255, 236, 190, 0.35)'
+              : isMother
+                ? 'rgba(48, 26, 10, 0.3)'
+                : 'rgba(14, 60, 52, 0.3)';
+          ctx.beginPath();
+          ctx.ellipse(
+            cx + Math.cos(ma) * md,
+            cy + Math.sin(ma) * md * 0.88,
+            1.2 + shellRand() * 2.2,
+            0.8 + shellRand() * 1.4,
+            ma,
+            0,
+            Math.PI * 2
+          );
+          ctx.fill();
+        }
+      }
       ctx.restore();
     });
+
+    // A little life on the shell: pale barnacle rings and soft green algae near the rim.
+    if (!isBump) {
+      for (let b = 0; b < (isMother ? 16 : 5); b++) {
+        const ba = shellRand() * Math.PI * 2;
+        const bd = 150 + shellRand() * 70;
+        const bx = 256 + Math.cos(ba) * bd * 0.72;
+        const by = 256 + Math.sin(ba) * bd * 0.86;
+        ctx.fillStyle = 'rgba(96, 150, 96, 0.22)';
+        ctx.beginPath();
+        ctx.ellipse(bx, by, 9 + shellRand() * 8, 6 + shellRand() * 5, ba, 0, Math.PI * 2);
+        ctx.fill();
+        if (b % 2 === 0) {
+          ctx.strokeStyle = 'rgba(236, 232, 214, 0.75)';
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.arc(bx + 4, by - 2, 2.6, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    }
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.colorSpace = isBump ? THREE.NoColorSpace : THREE.SRGBColorSpace;
@@ -127,22 +202,50 @@ export function createProceduralTextures(renderer: THREE.WebGLRenderer): OceanTe
   // 2. Flipper & Head Scale Texture
   const buildSkinTexture = (): THREE.CanvasTexture => {
     const canvas = document.createElement('canvas');
-    canvas.width = 256;
-    canvas.height = 256;
+    canvas.width = 512;
+    canvas.height = 512;
     const ctx = canvas.getContext('2d')!;
-    ctx.fillStyle = '#4e7c66';
-    ctx.fillRect(0, 0, 256, 256);
+    ctx.fillStyle = '#86a892'; // pale seams between the scale plates
+    ctx.fillRect(0, 0, 512, 512);
 
-    for (let y = 12; y < 250; y += 22) {
-      for (let x = 12; x < 250; x += 24) {
-        const offsetX = (y / 22) % 2 === 0 ? 0 : 12;
-        ctx.fillStyle = '#2d5340';
+    let skinSeed = 5;
+    const skinRand = () => {
+      skinSeed += 1;
+      const v = Math.sin(skinSeed * 12.9898) * 43758.5453;
+      return v - Math.floor(v);
+    };
+    // Scale plates on an offset grid, each a slightly different size, shape and shade.
+    const stepX = 512 / 12;
+    const stepY = 512 / 14;
+    for (let row = -1; row <= 14; row++) {
+      for (let col = -1; col <= 12; col++) {
+        const cx = col * stepX + (row % 2 === 0 ? 0 : stepX / 2) + (skinRand() - 0.5) * 6;
+        const cy = row * stepY + (skinRand() - 0.5) * 5;
+        const rx = stepX * (0.4 + skinRand() * 0.1);
+        const ry = stepY * (0.4 + skinRand() * 0.1);
+        const shade = 36 + Math.floor(skinRand() * 26);
+        const plate = ctx.createRadialGradient(cx - rx * 0.25, cy - ry * 0.25, 1, cx, cy, rx);
+        plate.addColorStop(0, `rgb(${shade + 34}, ${shade + 78}, ${shade + 52})`);
+        plate.addColorStop(1, `rgb(${shade}, ${shade + 40}, ${shade + 22})`);
+        ctx.fillStyle = plate;
+        // Six-sided plate with softened corners
         ctx.beginPath();
-        ctx.ellipse(x + offsetX, y, 8, 6, 0.1, 0, Math.PI * 2);
+        for (let k = 0; k < 6; k++) {
+          const a = (k / 6) * Math.PI * 2 + 0.3 + (skinRand() - 0.5) * 0.25;
+          const px = cx + Math.cos(a) * rx;
+          const py = cy + Math.sin(a) * ry;
+          if (k === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.closePath();
         ctx.fill();
-        ctx.strokeStyle = '#82ad95';
-        ctx.lineWidth = 1;
-        ctx.stroke();
+        // A few darker freckles on the plate
+        if (skinRand() > 0.45) {
+          ctx.fillStyle = 'rgba(18, 44, 30, 0.45)';
+          ctx.beginPath();
+          ctx.arc(cx + (skinRand() - 0.5) * rx, cy + (skinRand() - 0.5) * ry, 1.6, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
 

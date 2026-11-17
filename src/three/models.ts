@@ -106,6 +106,15 @@ export function createSeaTurtle(
   rimMesh.castShadow = true;
   bodyGroup.add(rimMesh);
 
+  // Low keel along the spine: a row of raised knobs, one per central scute.
+  [0.62, 0.3, -0.04, -0.38, -0.68].forEach((z) => {
+    const knob = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), rimMat);
+    knob.scale.set(0.75, 0.42, 1.5);
+    // Sits on the dome, which is highest in the middle and falls away to each end.
+    knob.position.set(0, 0.51 * Math.sqrt(1 - Math.pow(z / 1.2, 2)) - 0.005, z);
+    bodyGroup.add(knob);
+  });
+
   // 3. Plastron (Underbelly plate)
   const plastronGeo = new THREE.SphereGeometry(
     0.94,
@@ -145,6 +154,18 @@ export function createSeaTurtle(
   const beakMesh = new THREE.Mesh(beakGeo, plastronMat);
   beakMesh.position.set(0, -0.01, 0.36);
   headGroup.add(beakMesh);
+
+  // Nostrils, and loose folds of skin where the neck meets the shell.
+  [-1, 1].forEach((side) => {
+    const nostril = new THREE.Mesh(new THREE.SphereGeometry(0.014, 6, 5), eyeMat);
+    nostril.position.set(side * 0.035, 0.05, 0.415);
+    headGroup.add(nostril);
+  });
+  [0.0, -0.1].forEach((z, k) => {
+    const fold = new THREE.Mesh(new THREE.TorusGeometry(0.185 + k * 0.012, 0.022, 6, 16), skinMat);
+    fold.position.set(0, -0.02, z - 0.06);
+    headGroup.add(fold);
+  });
 
   const eyeRadius = isMother ? 0.054 : 0.068;
   const eyeGeo = new THREE.SphereGeometry(eyeRadius, 14, 14);
@@ -562,6 +583,112 @@ export function getSeagrassGeometry(): THREE.BufferGeometry {
   merged.computeVertexNormals();
   coralShapes.seagrass = merged;
   return merged;
+}
+
+/** A five-petalled flower on a short stem (about 0.35 tall), petals bright, centre pale. */
+export function getFlowerGeometry(): THREE.BufferGeometry {
+  if (coralShapes.flower) return coralShapes.flower;
+  const parts: THREE.BufferGeometry[] = [];
+  const stem = new THREE.CylinderGeometry(0.012, 0.016, 0.3, 5);
+  stem.translate(0, 0.15, 0);
+  parts.push(shadeCoral(stem, () => 0.22));
+  for (let k = 0; k < 5; k++) {
+    const petal = new THREE.SphereGeometry(0.075, 7, 5);
+    petal.scale(0.75, 0.16, 1.35);
+    petal.translate(0, 0, 0.095);
+    petal.rotateX(-0.35); // petals lift away from the centre
+    petal.rotateY((k / 5) * Math.PI * 2);
+    petal.translate(0, 0.31, 0);
+    parts.push(shadeCoral(petal, (v) => 0.72 + Math.hypot(v.x, v.z) * 2.2));
+  }
+  const centre = new THREE.SphereGeometry(0.035, 7, 5);
+  centre.translate(0, 0.325, 0);
+  parts.push(shadeCoral(centre, () => 0.3));
+  const merged = joinCoral(parts);
+  merged.computeVertexNormals();
+  coralShapes.flower = merged;
+  return merged;
+}
+
+/** A ribbed scallop shell lying on the sand (about 0.25 across). */
+export function getBeachShellGeometry(): THREE.BufferGeometry {
+  if (coralShapes.shell) return coralShapes.shell;
+  const ribs = 14;
+  const rings = 5;
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (let i = 0; i <= rings; i++) {
+    const t = i / rings;
+    for (let j = 0; j <= ribs; j++) {
+      // A fan opening from the hinge, domed in the middle, with raised ribs.
+      const a = -0.95 + (j / ribs) * 1.9;
+      const rib = j % 2 === 0 ? 0.012 : 0;
+      positions.push(Math.sin(a) * t * 0.13, Math.sin(t * Math.PI) * 0.045 + rib * t, Math.cos(a) * t * 0.13);
+    }
+  }
+  const row = ribs + 1;
+  for (let i = 0; i < rings; i++) {
+    for (let j = 0; j < ribs; j++) {
+      const a = i * row + j;
+      const b = a + row;
+      indices.push(a, a + 1, b, a + 1, b + 1, b);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  shadeCoral(geo, (v) => 0.7 + Math.hypot(v.x, v.z) * 2.2);
+  coralShapes.shell = geo;
+  return geo;
+}
+
+/** A weathered boulder (about 1.0 across), darker in its hollows. */
+export function getRockGeometry(): THREE.BufferGeometry {
+  if (coralShapes.rock) return coralShapes.rock;
+  const geo = new THREE.IcosahedronGeometry(0.5, 2);
+  const pos = geo.attributes.position;
+  const lump: number[] = [];
+  const d = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    d.fromBufferAttribute(pos, i).normalize();
+    const k =
+      1 +
+      Math.sin(d.x * 4.1 + 1.7) * Math.cos(d.z * 3.7) * 0.16 +
+      Math.sin(d.y * 6.3 + d.x * 2.9) * 0.08 +
+      Math.sin(d.z * 11.0 + d.y * 7.0) * 0.035;
+    lump.push(k);
+    pos.setXYZ(i, d.x * 0.5 * k, d.y * 0.5 * k * 0.72, d.z * 0.5 * k);
+  }
+  geo.computeVertexNormals();
+  let n = 0;
+  shadeCoral(geo, () => 0.45 + (lump[n++] - 0.8) * 1.1);
+  coralShapes.rock = geo;
+  return geo;
+}
+
+/** A sun-bleached driftwood log with a broken branch stub, lying on the beach. */
+export function createDriftwood(textures: OceanTextureLibrary, length: number): THREE.Group {
+  const group = new THREE.Group();
+  const wood = new THREE.MeshStandardMaterial({
+    map: textures.barkAlbedo,
+    color: 0xd9cdb8,
+    roughness: 0.92,
+  });
+  const spine = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-length / 2, 0.02, 0),
+    new THREE.Vector3(-length / 6, 0.1, 0.12),
+    new THREE.Vector3(length / 5, 0.07, -0.1),
+    new THREE.Vector3(length / 2, 0.16, 0.05),
+  ]);
+  const log = new THREE.Mesh(new THREE.TubeGeometry(spine, 14, 0.13, 7), wood);
+  log.castShadow = true;
+  group.add(log);
+  const stub = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.07, 0.5, 6), wood);
+  stub.position.set(length * 0.12, 0.3, -0.05);
+  stub.rotation.set(0.5, 0, -0.7);
+  group.add(stub);
+  return group;
 }
 
 /**
@@ -1578,6 +1705,139 @@ export function createShipwreck(
   anchorGroup.add(anchorShank, anchorCrown);
   wreck.add(anchorGroup);
 
+  // 9B. Barnacles crusting the planking, in clusters, thickest low on the hull.
+  const barnacleParts: THREE.BufferGeometry[] = [];
+  const outward = new THREE.Vector3();
+  const upAxis = new THREE.Vector3(0, 1, 0);
+  const barnacleTurn = new THREE.Quaternion();
+  const seeded = (n: number) => {
+    const v = Math.sin(n * 53.13 + 2.7) * 43758.5453;
+    return v - Math.floor(v);
+  };
+  for (let k = 0; k < 190; k++) {
+    const cluster = Math.floor(k / 9);
+    const u = 0.06 + seeded(cluster) * 0.84 + (seeded(k + 300) - 0.5) * 0.035;
+    const g = 0.15 + seeded(cluster + 60) * 0.55 + (seeded(k + 400) - 0.5) * 0.07;
+    const side = cluster % 2 === 0 ? 1 : -1;
+    if (u < 0 || u > 1 || g < 0.05 || g > 0.82 || isBreached(u, g, side)) continue;
+    const at = hullPoint(u, g, side);
+    // Point each one straight out from the planking.
+    const above = hullPoint(u, Math.min(1, g + 0.04), side);
+    outward.set(side * (above.y - at.y), -side * (above.x - at.x), 0).normalize();
+    const size = 0.035 + seeded(k + 500) * 0.045;
+    const barnacle = new THREE.CylinderGeometry(size * 0.45, size, size * 1.1, 6, 1, true);
+    barnacle.translate(0, size * 0.5, 0);
+    barnacle.applyQuaternion(barnacleTurn.setFromUnitVectors(upAxis, outward));
+    barnacle.translate(at.x, at.y, at.z);
+    barnacleParts.push(barnacle);
+  }
+  if (barnacleParts.length) {
+    const barnacles = new THREE.Mesh(
+      mergeGeometries(barnacleParts),
+      new THREE.MeshStandardMaterial({ color: 0xd8d2c0, roughness: 0.85, side: THREE.DoubleSide })
+    );
+    wreck.add(barnacles);
+    barnacleParts.forEach((part) => part.dispose());
+  }
+
+  // 9C. Cargo spilled on the seabed beside the hull: barrels, crates, cannonballs, planks.
+  const hoopMat = ironMat;
+  [
+    [3.6, 1.8, 0.4, 1.2],
+    [4.3, 2.9, 1.3, 0.2],
+    [-3.9, -1.4, 0.9, 1.45],
+    [-4.6, 4.2, 0.2, 0.3],
+  ].forEach(([bx, bz, turn, tip]) => {
+    const barrel = new THREE.Group();
+    const staves = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 0.8, 12), hullMat);
+    barrel.add(staves);
+    const belly = new THREE.Mesh(new THREE.SphereGeometry(0.34, 12, 8), hullMat);
+    belly.scale.set(1, 1.05, 1);
+    barrel.add(belly);
+    [-0.28, 0, 0.28].forEach((hy) => {
+      const hoop = new THREE.Mesh(new THREE.TorusGeometry(hy === 0 ? 0.345 : 0.31, 0.022, 5, 16), hoopMat);
+      hoop.rotation.x = Math.PI / 2;
+      hoop.position.y = hy;
+      barrel.add(hoop);
+    });
+    // Some stand upright, some have rolled onto their sides.
+    barrel.rotation.set(0, turn, tip);
+    barrel.position.set(bx, tip > 1 ? 0.32 : 0.4, bz);
+    wreck.add(barrel);
+  });
+  [
+    [4.9, -0.6, 0.5, 0.75],
+    [-3.7, 2.4, 1.1, 0.62],
+    [3.4, -3.0, 0.2, 0.55],
+  ].forEach(([cx, cz, turn, size]) => {
+    const crate = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), hullMat);
+    crate.position.set(cx, size / 2 - 0.05, cz);
+    crate.rotation.set(0.08, turn, -0.1);
+    crate.castShadow = true;
+    wreck.add(crate);
+    // Iron corner straps
+    [-1, 1].forEach((edge) => {
+      const strap = new THREE.Mesh(new THREE.BoxGeometry(size * 1.03, 0.05, size * 1.03), trimMat);
+      strap.position.set(cx, size / 2 - 0.05 + edge * size * 0.36, cz);
+      strap.rotation.copy(crate.rotation);
+      wreck.add(strap);
+    });
+  });
+  const ballGeo = new THREE.SphereGeometry(0.13, 10, 8);
+  for (let c = 0; c < 9; c++) {
+    const ball = new THREE.Mesh(ballGeo, ironMat);
+    ball.position.set(
+      (c % 2 === 0 ? 1 : -1) * (3.1 + seeded(c + 800) * 2.2),
+      0.1,
+      -2.5 + seeded(c + 820) * 7
+    );
+    wreck.add(ball);
+  }
+  for (let pl = 0; pl < 7; pl++) {
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.06, 1.3 + seeded(pl + 850) * 1.2), hullMat);
+    plank.position.set(
+      (pl % 2 === 0 ? -1 : 1) * (3.2 + seeded(pl + 860) * 2.8),
+      0.05 + seeded(pl + 870) * 0.12,
+      -4 + seeded(pl + 880) * 10
+    );
+    plank.rotation.set(seeded(pl + 890) * 0.3, seeded(pl + 900) * Math.PI, seeded(pl + 910) * 0.25);
+    wreck.add(plank);
+  }
+
+  // 9D. Weed trailing from the yards and rails, hanging straight down in the still water.
+  const weedMat = new THREE.MeshStandardMaterial({
+    color: 0x3f8f5a,
+    roughness: 0.7,
+    side: THREE.DoubleSide,
+  });
+  weedMat.onBeforeCompile = (shader) => {
+    shader.fragmentShader = withNearCameraFade(shader.fragmentShader);
+  };
+  [
+    [-2.6, 7.55, 2.4, 2.2],
+    [-1.2, 7.55, 2.4, 1.5],
+    [1.4, 7.55, 2.4, 2.6],
+    [2.9, 7.55, 2.4, 1.3],
+    [-2.3, 8.5, -2.4, 2.4],
+    [0.6, 8.5, -2.4, 1.7],
+    [2.5, 8.5, -2.4, 2.9],
+    [-1.6, 4.9, -3.85, 1.1],
+    [1.3, 4.9, -3.85, 0.9],
+  ].forEach(([wx, wy, wz, drop], k) => {
+    const strand = new THREE.PlaneGeometry(0.16, drop, 1, 6);
+    const sp = strand.attributes.position;
+    for (let i = 0; i < sp.count; i++) {
+      const t = 0.5 - sp.getY(i) / drop; // 0 at the top, 1 at the ragged end
+      sp.setX(i, sp.getX(i) * (1 - t * 0.6) + Math.sin(t * 5 + k) * 0.07);
+      sp.setZ(i, Math.sin(t * 3.5 + k * 1.3) * 0.09);
+    }
+    strand.computeVertexNormals();
+    const weed = new THREE.Mesh(strand, weedMat);
+    weed.position.set(wx, wy - drop / 2, wz);
+    weed.rotation.y = k * 0.9;
+    wreck.add(weed);
+  });
+
   // 10. Living Coral & Sea Fan Encrustations growing on the sunken hull
   const coralColors = [0xf43f5e, 0xfb923c, 0x2dd4bf, 0xc084fc];
   for (let c = 0; c < 8; c++) {
@@ -2408,6 +2668,7 @@ export function createGrotto(
 ): {
   group: THREE.Group;
   glowMaterials: THREE.MeshStandardMaterial[];
+  motes: THREE.Points;
 } {
   const group = new THREE.Group();
 
@@ -2535,5 +2796,91 @@ export function createGrotto(
     group.add(light);
   });
 
-  return { group, glowMaterials };
+  // Glowing mushroom-shaped anemones dotted over the floor, and tall tube worms by the rocks.
+  const capGeo = new THREE.SphereGeometry(0.3, 12, 7, 0, Math.PI * 2, 0, Math.PI / 2);
+  const stalkGeo = new THREE.CylinderGeometry(0.05, 0.08, 0.5, 7);
+  const wormGeo = new THREE.CylinderGeometry(0.035, 0.05, 1, 6);
+  const frondGeo = new THREE.ConeGeometry(0.13, 0.22, 8, 1, true);
+  for (let m = 0; m < 22; m++) {
+    const angle = rand(m + 700) * Math.PI * 2;
+    const r = 3 + rand(m + 740) * 12.5;
+    const mx = GROTTO_CENTER.x + Math.cos(angle) * r;
+    const mz = GROTTO_CENTER.z + Math.sin(angle) * r;
+    const my = groundAt(mx, mz);
+    const mat = glowMaterials[(m + 1) % glowMaterials.length];
+    if (m % 3 === 0) {
+      // A small stand of tube worms, each tipped with a glowing feathery crown.
+      for (let w = 0; w < 4; w++) {
+        const h = 0.5 + rand(m * 11 + w) * 0.9;
+        const wx = mx + (rand(m * 13 + w) - 0.5) * 0.5;
+        const wz = mz + (rand(m * 17 + w) - 0.5) * 0.5;
+        const tube = new THREE.Mesh(wormGeo, rockMat);
+        tube.scale.y = h;
+        tube.position.set(wx, my + h / 2, wz);
+        const crown = new THREE.Mesh(frondGeo, mat);
+        crown.position.set(wx, my + h + 0.08, wz);
+        crown.rotation.x = Math.PI; // opens upward like a flower
+        group.add(tube, crown);
+      }
+    } else {
+      const size = 0.7 + rand(m + 780) * 0.9;
+      const stalk = new THREE.Mesh(stalkGeo, rockMat);
+      stalk.scale.setScalar(size);
+      stalk.position.set(mx, my + 0.25 * size, mz);
+      const cap = new THREE.Mesh(capGeo, mat);
+      cap.scale.set(size, size * 0.7, size);
+      cap.position.set(mx, my + 0.48 * size, mz);
+      group.add(stalk, cap);
+    }
+  }
+
+  // Fallen rubble around the foot of the ring.
+  const rubbleGeo = getRockGeometry();
+  for (let b = 0; b < 18; b++) {
+    const angle = rand(b + 900) * Math.PI * 2;
+    const r = ringRadius - 2.6 + rand(b + 930) * 1.6;
+    const bx = GROTTO_CENTER.x + Math.cos(angle) * r;
+    const bz = GROTTO_CENTER.z + Math.sin(angle) * r;
+    const boulder = new THREE.Mesh(rubbleGeo, rockMat);
+    boulder.scale.setScalar(0.6 + rand(b + 960) * 1.3);
+    boulder.position.set(bx, groundAt(bx, bz) + 0.12, bz);
+    boulder.rotation.y = rand(b + 990) * Math.PI * 2;
+    group.add(boulder);
+  }
+
+  // Drifting motes of living light, filling the water inside the ring.
+  const moteCount = 160;
+  const motePositions = new Float32Array(moteCount * 3);
+  const moteColors = new Float32Array(moteCount * 3);
+  const moteColor = new THREE.Color();
+  for (let i = 0; i < moteCount; i++) {
+    const angle = rand(i + 1200) * Math.PI * 2;
+    const r = Math.sqrt(rand(i + 1300)) * 15;
+    const px = Math.cos(angle) * r;
+    const pz = Math.sin(angle) * r;
+    motePositions[i * 3] = px;
+    motePositions[i * 3 + 1] = groundAt(GROTTO_CENTER.x + px, GROTTO_CENTER.z + pz) + 0.6 + rand(i + 1400) * 6.5;
+    motePositions[i * 3 + 2] = pz;
+    moteColor.setHex(glowPalette[i % glowPalette.length]);
+    moteColors.set([moteColor.r, moteColor.g, moteColor.b], i * 3);
+  }
+  const moteGeo = new THREE.BufferGeometry();
+  moteGeo.setAttribute('position', new THREE.BufferAttribute(motePositions, 3));
+  moteGeo.setAttribute('color', new THREE.BufferAttribute(moteColors, 3));
+  const motes = new THREE.Points(
+    moteGeo,
+    new THREE.PointsMaterial({
+      size: 0.16,
+      vertexColors: true,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      fog: false,
+    })
+  );
+  motes.position.set(GROTTO_CENTER.x, 0, GROTTO_CENTER.z);
+  group.add(motes);
+
+  return { group, glowMaterials, motes };
 }
