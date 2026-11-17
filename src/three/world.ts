@@ -19,6 +19,10 @@ import {
   createShipwreck,
   getBrainCoralGeometry,
   getBranchCoralGeometry,
+  getPebbleGeometry,
+  getSeagrassGeometry,
+  getTableCoralGeometry,
+  getTubeSpongeGeometry,
   getCoralSurfaceTexture,
   SHIP_HULL,
   createStaghornCoral,
@@ -877,7 +881,7 @@ export function buildOceanWorld(
   });
 
   // 6. Vibrant Coral Reef Formations with Procedural Current-Swaying Vertex Shader
-  const coralCount = 160;
+  const coralCount = lightGraphics ? 190 : 230;
 
   const coralUniforms = {
     uTime: { value: 0 },
@@ -885,6 +889,7 @@ export function buildOceanWorld(
 
   const coralMaterial = new THREE.MeshStandardMaterial({
     color: 0xffffff,
+    vertexColors: true,
     map: getCoralSurfaceTexture(),
     bumpMap: getCoralSurfaceTexture(),
     bumpScale: 0.06,
@@ -920,29 +925,36 @@ export function buildOceanWorld(
 
   palmCollidersAdded = true;
   SOFT_OBSTACLES.length = 0;
-  // Two coral forms, each drawn as one instanced mesh: rounded brain-coral mounds and
-  // clumps of branching coral. Every third coral is a branching one.
-  const branchTotal = Math.floor(coralCount / 3);
-  const moundCoral = new THREE.InstancedMesh(
-    getBrainCoralGeometry(),
-    coralMaterial,
-    coralCount - branchTotal
-  );
-  const branchCoral = new THREE.InstancedMesh(getBranchCoralGeometry(), coralMaterial, branchTotal);
-  const coralPalette = [0xf43f5e, 0xfb923c, 0xa855f7, 0xec4899, 0x2dd4bf, 0xfacc15];
+  // Four coral forms, each drawn as one instanced mesh: brain-coral mounds, branching
+  // staghorn, flat table coral and clusters of tube sponges.
+  type CoralKind = 'brain' | 'branch' | 'table' | 'sponge';
+  const kindCycle: CoralKind[] = ['brain', 'branch', 'table', 'brain', 'sponge', 'branch'];
+  const kindOf = (i: number) => kindCycle[i % kindCycle.length];
+  const countOf = (kind: CoralKind) =>
+    Array.from({ length: coralCount }, (_, i) => kindOf(i)).filter((k) => k === kind).length;
+  const coralMeshes: Record<CoralKind, THREE.InstancedMesh> = {
+    brain: new THREE.InstancedMesh(getBrainCoralGeometry(), coralMaterial, countOf('brain')),
+    branch: new THREE.InstancedMesh(getBranchCoralGeometry(), coralMaterial, countOf('branch')),
+    table: new THREE.InstancedMesh(getTableCoralGeometry(), coralMaterial, countOf('table')),
+    sponge: new THREE.InstancedMesh(getTubeSpongeGeometry(), coralMaterial, countOf('sponge')),
+  };
+  const coralSlots: Record<CoralKind, number> = { brain: 0, branch: 0, table: 0, sponge: 0 };
+  // Each kind keeps to colours that suit it, with a little variation between neighbours.
+  const coralPalettes: Record<CoralKind, number[]> = {
+    brain: [0xf43f5e, 0xfb923c, 0xfacc15, 0x2dd4bf, 0xa3e635],
+    branch: [0xa855f7, 0xec4899, 0xfb7185, 0x38bdf8, 0xfde047],
+    table: [0x2dd4bf, 0x60a5fa, 0xf59e0b, 0xc084fc],
+    sponge: [0xfacc15, 0xf97316, 0xe879f9, 0x4ade80],
+  };
+  // How much of each kind's footprint a turtle bumps into.
+  const coralBump: Record<CoralKind, number> = { brain: 0.8, branch: 0.6, table: 0.55, sponge: 0.5 };
   const wreckCentres: [number, number][] = [
     [-38, -26],
     [30, -42],
   ];
-  let moundIndex = 0;
-  let branchIndex = 0;
-
-  for (let i = 0; i < coralCount; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    const radius = 8 + Math.random() * 58;
-    let cx = Math.cos(angle) * radius;
-    let cz = Math.sin(angle) * radius - 8;
-    // Keep the shipwrecks clear, so nothing grows in the way of swimming through them.
+  const keepClearOfWrecks = (x: number, z: number): [number, number] => {
+    let cx = x;
+    let cz = z;
     wreckCentres.forEach(([wx, wz]) => {
       const d = Math.hypot(cx - wx, cz - wz);
       if (d < 11) {
@@ -951,40 +963,137 @@ export function buildOceanWorld(
         cz = wz + (cz - wz) * push;
       }
     });
+    return [cx, cz];
+  };
+
+  for (let i = 0; i < coralCount; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 8 + Math.random() * 58;
+    // Keep the shipwrecks clear, so nothing grows in the way of swimming through them.
+    const [cx, cz] = keepClearOfWrecks(Math.cos(angle) * radius, Math.sin(angle) * radius - 8);
     const cy = groundHeightAt(cx, cz);
-    const isBranch = i % 3 === 2 && branchIndex < branchTotal;
+    const kind = kindOf(i);
 
     // Set a little into the sand so the base never floats on a slope.
     _dummy.position.set(cx, Math.min(-1.2, cy) - 0.08, cz);
     _dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
     const s = 0.6 + Math.random() * 1.35;
-    if (isBranch) _dummy.scale.set(s * 0.85, s * (0.8 + Math.random() * 0.4), s * 0.85);
-    else _dummy.scale.set(s * 1.15, s * (0.65 + Math.random() * 0.6), s);
+    if (kind === 'brain') _dummy.scale.set(s * 1.15, s * (0.65 + Math.random() * 0.6), s);
+    else if (kind === 'table') _dummy.scale.set(s * 0.9, s * (0.7 + Math.random() * 0.4), s * 0.9);
+    else _dummy.scale.set(s * 0.85, s * (0.8 + Math.random() * 0.4), s * 0.85);
     _dummy.updateMatrix();
     SOFT_OBSTACLES.push({
       x: cx,
       y: _dummy.position.y,
       z: cz,
-      radius: 0.75 * s * (isBranch ? 0.6 : 0.8),
+      radius: 0.75 * s * coralBump[kind],
     });
 
-    _color.setHex(coralPalette[i % coralPalette.length]);
-    if (isBranch) {
-      branchCoral.setMatrixAt(branchIndex, _dummy.matrix);
-      branchCoral.setColorAt(branchIndex, _color);
-      branchIndex += 1;
-    } else {
-      moundCoral.setMatrixAt(moundIndex, _dummy.matrix);
-      moundCoral.setColorAt(moundIndex, _color);
-      moundIndex += 1;
-    }
+    const palette = coralPalettes[kind];
+    _color.setHex(palette[i % palette.length]);
+    // Nudge hue and brightness so no two neighbours are quite the same colour.
+    _color.offsetHSL((Math.random() - 0.5) * 0.05, 0, (Math.random() - 0.5) * 0.1);
+    const mesh = coralMeshes[kind];
+    mesh.setMatrixAt(coralSlots[kind], _dummy.matrix);
+    mesh.setColorAt(coralSlots[kind], _color);
+    coralSlots[kind] += 1;
   }
-  [moundCoral, branchCoral].forEach((mesh) => {
+  Object.values(coralMeshes).forEach((mesh) => {
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     mesh.computeBoundingSphere();
     scene.add(mesh);
   });
+
+  // 6B. Seabed detail: pebbles and shell fragments scattered over the sand, thickest
+  // around the reef, and tufts of seagrass in the shallows.
+  const pebbleCount = lightGraphics ? 420 : 700;
+  const pebbles = new THREE.InstancedMesh(
+    getPebbleGeometry(),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, metalness: 0.02 }),
+    pebbleCount
+  );
+  const pebbleTones = [0x94a3b8, 0xcbd5e1, 0xd6c7a1, 0xf5ead2, 0x8b7d6b, 0xfbcfe8];
+  for (let i = 0; i < pebbleCount; i++) {
+    // Most gather in loose patches; the rest lie singly across the seabed.
+    const patch = i % 4 !== 0;
+    const patchAngle = Math.floor(i / 12) * 2.4;
+    const patchRadius = 10 + ((Math.floor(i / 12) * 37) % 55);
+    const px = patch
+      ? Math.cos(patchAngle) * patchRadius + (Math.random() - 0.5) * 5
+      : (Math.random() - 0.5) * 150;
+    const pz = patch
+      ? Math.sin(patchAngle) * patchRadius - 8 + (Math.random() - 0.5) * 5
+      : (Math.random() - 0.5) * 150;
+    const py = groundHeightAt(px, pz);
+    _dummy.position.set(px, py + 0.02, pz);
+    _dummy.rotation.set(Math.random() * 0.4, Math.random() * Math.PI * 2, Math.random() * 0.4);
+    const ps = 0.5 + Math.random() * 1.6;
+    _dummy.scale.set(ps * (0.8 + Math.random() * 0.5), ps, ps);
+    _dummy.updateMatrix();
+    pebbles.setMatrixAt(i, _dummy.matrix);
+    _color.setHex(pebbleTones[i % pebbleTones.length]);
+    pebbles.setColorAt(i, _color);
+  }
+  pebbles.instanceMatrix.needsUpdate = true;
+  if (pebbles.instanceColor) pebbles.instanceColor.needsUpdate = true;
+  pebbles.receiveShadow = true;
+  scene.add(pebbles);
+
+  const seagrassCount = lightGraphics ? 260 : 420;
+  const seagrassMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    vertexColors: true,
+    roughness: 0.6,
+    side: THREE.DoubleSide,
+  });
+  seagrassMat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = coralUniforms.uTime;
+    shader.vertexShader =
+      `uniform float uTime;\n` +
+      shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        `
+        #include <begin_vertex>
+        // Blades bend with the current, more toward the tip.
+        float bend = clamp(transformed.y / 0.9, 0.0, 1.0);
+        float gx = instanceMatrix[3][0];
+        float gz = instanceMatrix[3][2];
+        transformed.x += sin(uTime * 1.7 + gx * 0.6 + gz * 0.4) * 0.16 * bend * bend;
+        transformed.z += cos(uTime * 1.3 + gx * 0.3 - gz * 0.5) * 0.11 * bend * bend;
+        `
+      );
+    shader.fragmentShader = withNearCameraFade(shader.fragmentShader);
+  };
+  const seagrass = new THREE.InstancedMesh(getSeagrassGeometry(), seagrassMat, seagrassCount);
+  const grassTones = [0x4ade80, 0x22c55e, 0x86efac, 0x34d399, 0xa3e635];
+  let grassPlaced = 0;
+  for (let attempt = 0; attempt < seagrassCount * 12 && grassPlaced < seagrassCount; attempt++) {
+    // Meadows: pick a patch centre, then scatter tufts around it.
+    const meadow = attempt % 9;
+    const mAngle = meadow * 0.7 + 0.3;
+    const mRadius = 14 + meadow * 6;
+    const gx = Math.cos(mAngle) * mRadius + (Math.random() - 0.5) * 12;
+    const gz = Math.sin(mAngle) * mRadius - 4 + (Math.random() - 0.5) * 12;
+    const gy = groundHeightAt(gx, gz);
+    // Seagrass only grows where light reaches: under water, but not in the deep.
+    if (gy > -0.7 || gy < -9.5) continue;
+    const [fx, fz] = keepClearOfWrecks(gx, gz);
+    _dummy.position.set(fx, groundHeightAt(fx, fz) - 0.03, fz);
+    _dummy.rotation.set(0, Math.random() * Math.PI * 2, 0);
+    const gs = 0.8 + Math.random() * 1.1;
+    _dummy.scale.set(gs, gs * (0.8 + Math.random() * 0.6), gs);
+    _dummy.updateMatrix();
+    seagrass.setMatrixAt(grassPlaced, _dummy.matrix);
+    _color.setHex(grassTones[grassPlaced % grassTones.length]);
+    seagrass.setColorAt(grassPlaced, _color);
+    grassPlaced += 1;
+  }
+  seagrass.count = grassPlaced;
+  seagrass.instanceMatrix.needsUpdate = true;
+  if (seagrass.instanceColor) seagrass.instanceColor.needsUpdate = true;
+  seagrass.frustumCulled = false;
+  scene.add(seagrass);
 
   // 7. Underwater Sunbeam God-Rays
   const sunBeamsGroup = new THREE.Group();
