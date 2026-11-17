@@ -284,12 +284,12 @@ export interface EdibleSeaweedPatch {
  * Multi-Part Textured Edible Sea-Lettuce & Ribbon Kelp Patch for Turtles to Munch
  */
 // ---------------------------------------------------------------------------
-// Coral shapes. Two simple forms shared by every coral in the world, so the reef
-// reads as coral without adding draw calls: a lumpy "brain coral" mound and a
-// cluster of stubby branches. Colour comes from each instance.
+// Coral and seabed detail. A handful of shapes shared by every coral in the world, each
+// drawn as one instanced mesh, so the reef can be dense and varied without many draw
+// calls. Shapes are shaded in greys (darker bases and hollows, bright tips and ridges)
+// and each instance's own colour tints them.
 // ---------------------------------------------------------------------------
-let brainCoralGeometry: THREE.BufferGeometry | null = null;
-let branchCoralGeometry: THREE.BufferGeometry | null = null;
+const coralShapes: Record<string, THREE.BufferGeometry> = {};
 let coralSurfaceTexture: THREE.CanvasTexture | null = null;
 
 /** Repeatable pseudo-random number in 0..1, so corals look the same on every visit. */
@@ -298,96 +298,326 @@ const coralRand = (n: number) => {
   return v - Math.floor(v);
 };
 
-/** Rounded mound with folds, sitting on the seabed (base at y = 0, about 0.9 tall). */
+/** Paints a grey level per vertex (1 = full instance colour, lower = shaded). */
+function shadeCoral(
+  geo: THREE.BufferGeometry,
+  levelAt: (v: THREE.Vector3) => number
+): THREE.BufferGeometry {
+  const pos = geo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    const level = THREE.MathUtils.clamp(levelAt(v.fromBufferAttribute(pos, i)), 0, 1);
+    colors[i * 3] = colors[i * 3 + 1] = colors[i * 3 + 2] = level;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return geo;
+}
+
+/** Merges parts, keeping only the attributes every coral shape shares. */
+function joinCoral(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  const plain = parts.map((part) => {
+    const g = part.index ? part.toNonIndexed() : part;
+    Object.keys(g.attributes).forEach((name) => {
+      if (!['position', 'normal', 'uv', 'color'].includes(name)) g.deleteAttribute(name);
+    });
+    return g;
+  });
+  const merged = mergeGeometries(plain);
+  parts.forEach((part) => part.dispose());
+  return merged;
+}
+
+/**
+ * Brain coral: a rounded mound covered in winding ridges and valleys, sitting on the
+ * seabed (base at y = 0, about 0.9 tall).
+ */
 export function getBrainCoralGeometry(): THREE.BufferGeometry {
-  if (brainCoralGeometry) return brainCoralGeometry;
-  const geo = new THREE.SphereGeometry(0.8, 26, 14, 0, Math.PI * 2, 0, Math.PI / 2);
+  if (coralShapes.brain) return coralShapes.brain;
+  const geo = new THREE.SphereGeometry(0.8, 44, 22, 0, Math.PI * 2, 0, Math.PI / 2);
   const pos = geo.attributes.position;
   const dir = new THREE.Vector3();
+  const ridge: number[] = [];
   for (let i = 0; i < pos.count; i++) {
     dir.fromBufferAttribute(pos, i);
     const length = dir.length() || 1;
     dir.divideScalar(length);
-    const folds =
-      Math.sin(dir.x * 7.0 + 1.3) * Math.cos(dir.z * 6.1) * 0.1 +
-      Math.sin(dir.y * 9.0 + dir.x * 4.0 + dir.z * 3.0) * 0.06;
-    const r = length * (1 + folds);
+    // Big lumps, then a maze of narrow ridges that wander as they cross the mound.
+    const lumps =
+      Math.sin(dir.x * 6.0 + 1.3) * Math.cos(dir.z * 5.3) * 0.09 +
+      Math.sin(dir.y * 7.0 + dir.x * 3.0) * 0.05;
+    const wander = Math.sin(dir.z * 9.0 + dir.y * 4.0) * 1.6 + Math.cos(dir.x * 7.0) * 1.2;
+    const maze = Math.sin(dir.x * 23.0 + wander) * Math.cos(dir.z * 21.0 - wander * 0.7);
+    ridge.push(maze);
+    const r = length * (1 + lumps + maze * 0.028);
     pos.setXYZ(i, dir.x * r, dir.y * r * 1.12, dir.z * r);
   }
   geo.computeVertexNormals();
-  brainCoralGeometry = geo;
+  let n = 0;
+  shadeCoral(geo, (v) => 0.62 + ridge[n++] * 0.2 + (v.y / 0.9) * 0.2);
+  coralShapes.brain = geo;
   return geo;
 }
 
-/** A clump of rounded branches reaching up and out from one base (about 1.5 tall). */
+/**
+ * Branching (staghorn) coral: several trunks rising from one base, each forking twice
+ * into thinner branches with bright rounded tips (about 1.6 tall).
+ */
 export function getBranchCoralGeometry(): THREE.BufferGeometry {
-  if (branchCoralGeometry) return branchCoralGeometry;
+  if (coralShapes.branch) return coralShapes.branch;
   const parts: THREE.BufferGeometry[] = [];
-  const base = new THREE.SphereGeometry(0.34, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2);
-  base.scale(1.25, 0.6, 1.25);
-  parts.push(base);
-  const branchCount = 9;
-  for (let b = 0; b < branchCount; b++) {
-    const height = b === 0 ? 1.25 : 0.7 + coralRand(b) * 0.65;
-    const branch = new THREE.CapsuleGeometry(0.1 + coralRand(b + 20) * 0.04, height, 3, 7);
-    branch.translate(0, height / 2 + 0.05, 0);
-    if (b > 0) {
-      // Lean outward, each in its own direction around the clump.
-      branch.rotateZ(0.3 + coralRand(b + 40) * 0.45);
-      branch.rotateY((b / (branchCount - 1)) * Math.PI * 2 + coralRand(b + 60) * 0.5);
-      // A short side shoot partway up every other branch.
-      if (b % 2 === 0) {
-        const shoot = new THREE.CapsuleGeometry(0.075, 0.38, 3, 6);
-        shoot.translate(0, 0.19, 0);
-        shoot.rotateZ(-0.9);
-        shoot.translate(0, height * 0.55, 0);
-        shoot.rotateZ(0.3 + coralRand(b + 40) * 0.45);
-        shoot.rotateY((b / (branchCount - 1)) * Math.PI * 2 + coralRand(b + 60) * 0.5);
-        parts.push(shoot);
-      }
+  const up = new THREE.Vector3(0, 1, 0);
+  const q = new THREE.Quaternion();
+  let seed = 1;
+
+  const grow = (from: THREE.Vector3, dir: THREE.Vector3, length: number, radius: number, depth: number) => {
+    const limb = new THREE.CylinderGeometry(radius * 0.72, radius, length, 6, 1, true);
+    limb.translate(0, length / 2, 0);
+    limb.applyQuaternion(q.setFromUnitVectors(up, dir));
+    limb.translate(from.x, from.y, from.z);
+    parts.push(limb);
+    const end = from.clone().addScaledVector(dir, length);
+    if (depth === 0) {
+      const tip = new THREE.SphereGeometry(radius * 0.78, 6, 4);
+      tip.translate(end.x, end.y, end.z);
+      parts.push(tip);
+      return;
     }
-    parts.push(branch);
+    const forks = depth === 2 ? 3 : 2;
+    for (let f = 0; f < forks; f++) {
+      seed += 1;
+      const around = (f / forks) * Math.PI * 2 + coralRand(seed) * 1.4;
+      const spread = 0.45 + coralRand(seed + 100) * 0.35;
+      // Lean away from the parent, but always keep growing upward.
+      const side = new THREE.Vector3(Math.cos(around), 0, Math.sin(around));
+      const next = dir.clone().multiplyScalar(Math.cos(spread)).addScaledVector(side, Math.sin(spread));
+      next.y = Math.max(next.y, 0.35);
+      next.normalize();
+      grow(end, next, length * (0.62 + coralRand(seed + 200) * 0.2), radius * 0.7, depth - 1);
+    }
+  };
+
+  const base = new THREE.SphereGeometry(0.36, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2);
+  base.scale(1.3, 0.5, 1.3);
+  parts.push(base);
+  const trunks = 5;
+  for (let t = 0; t < trunks; t++) {
+    const around = (t / trunks) * Math.PI * 2 + coralRand(t + 7) * 0.6;
+    const lean = t === 0 ? 0.05 : 0.3 + coralRand(t + 30) * 0.3;
+    const dir = new THREE.Vector3(Math.cos(around) * Math.sin(lean), Math.cos(lean), Math.sin(around) * Math.sin(lean));
+    const from = new THREE.Vector3(Math.cos(around) * 0.14, 0.08, Math.sin(around) * 0.14);
+    grow(from, dir, 0.5 + coralRand(t + 50) * 0.2, 0.1, 2);
   }
-  const merged = mergeGeometries(parts);
-  parts.forEach((part) => part.dispose());
+  const merged = joinCoral(parts);
   merged.computeVertexNormals();
-  branchCoralGeometry = merged;
+  // Shaded base, colour strengthening up the branches, brightest at the tips.
+  shadeCoral(merged, (v) => 0.5 + Math.pow(Math.min(1, v.y / 1.5), 0.8) * 0.5);
+  coralShapes.branch = merged;
   return merged;
 }
 
-/** Pale surface with darker winding grooves and pores; tinted by each coral's colour. */
+/**
+ * Table coral: a short stalk carrying wide, slightly cupped plates with a scalloped rim
+ * and a nubbly top (about 1.0 tall, 2.2 across).
+ */
+export function getTableCoralGeometry(): THREE.BufferGeometry {
+  if (coralShapes.table) return coralShapes.table;
+  const plate = (radius: number, y: number, tilt: number, turn: number) => {
+    const rings = 7;
+    const spokes = 36;
+    const build = (top: boolean) => {
+      const positions: number[] = [];
+      const uvs: number[] = [];
+      const indices: number[] = [];
+      for (let i = 0; i <= rings; i++) {
+        const t = i / rings;
+        for (let j = 0; j <= spokes; j++) {
+          const a = (j / spokes) * Math.PI * 2;
+          const scallop = 1 + Math.sin(a * 9 + turn * 3) * 0.05 * t + Math.sin(a * 4 + turn) * 0.06 * t;
+          const r = radius * t * scallop;
+          // Cupped upward toward the rim; the top carries small nubs, the underside is smooth.
+          const cup = t * t * 0.16;
+          const nubs = top ? Math.max(0, Math.sin(r * 17 + a * 3) * Math.sin(a * 13 + r * 5)) * 0.045 * (0.3 + t) : 0;
+          const thickness = 0.085 * (1 - t * 0.75);
+          positions.push(Math.cos(a) * r, cup + (top ? thickness + nubs : -thickness), Math.sin(a) * r);
+          uvs.push(0.5 + Math.cos(a) * t * 0.5, 0.5 + Math.sin(a) * t * 0.5);
+        }
+      }
+      const ring = spokes + 1;
+      for (let i = 0; i < rings; i++) {
+        for (let j = 0; j < spokes; j++) {
+          const p0 = i * ring + j;
+          const p1 = p0 + ring;
+          if (top) indices.push(p0, p0 + 1, p1, p0 + 1, p1 + 1, p1);
+          else indices.push(p0, p1, p0 + 1, p0 + 1, p1, p1 + 1);
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+      // Bright top that lightens toward the growing rim; shadowed underside.
+      shadeCoral(geo, (v) => (top ? 0.72 + (Math.hypot(v.x, v.z) / radius) * 0.28 : 0.42));
+      geo.rotateY(turn);
+      geo.rotateZ(tilt);
+      geo.translate(0, y, 0);
+      return geo;
+    };
+    return [build(true), build(false)];
+  };
+  const stalk = new THREE.CylinderGeometry(0.16, 0.3, 0.62, 9, 1, false);
+  stalk.translate(0, 0.31, 0);
+  shadeCoral(stalk, () => 0.5);
+  const merged = joinCoral([
+    stalk,
+    ...plate(1.1, 0.62, 0.06, 0.4),
+    ...plate(0.62, 0.86, -0.1, 2.1).map((g) => g.translate(0.22, 0, 0.12)),
+  ]);
+  coralShapes.table = merged;
+  return merged;
+}
+
+/**
+ * Tube sponges: a cluster of open, slightly flared tubes of different heights, dark
+ * inside (tallest about 1.4).
+ */
+export function getTubeSpongeGeometry(): THREE.BufferGeometry {
+  if (coralShapes.sponge) return coralShapes.sponge;
+  const parts: THREE.BufferGeometry[] = [];
+  const tubes = 6;
+  for (let t = 0; t < tubes; t++) {
+    const height = t === 0 ? 1.4 : 0.6 + coralRand(t + 3) * 0.7;
+    const radius = 0.15 + coralRand(t + 13) * 0.07;
+    const around = (t / (tubes - 1)) * Math.PI * 2;
+    const offset = t === 0 ? 0 : 0.3 + coralRand(t + 23) * 0.1;
+    // Lumpy wall, narrow at the foot and flaring at the lip.
+    const wall = new THREE.CylinderGeometry(radius * 1.12, radius * 0.7, height, 12, 5, true);
+    const wp = wall.attributes.position;
+    for (let i = 0; i < wp.count; i++) {
+      const y = wp.getY(i);
+      const bulge = 1 + Math.sin((y / height) * 9 + t) * 0.06;
+      wp.setX(i, wp.getX(i) * bulge);
+      wp.setZ(i, wp.getZ(i) * bulge);
+    }
+    wall.translate(0, height / 2, 0);
+    shadeCoral(wall, (v) => 0.58 + (v.y / height) * 0.42);
+    // Rounded lip and the dark hollow just inside it.
+    const lip = new THREE.TorusGeometry(radius * 1.12, radius * 0.16, 5, 12);
+    lip.rotateX(Math.PI / 2);
+    lip.translate(0, height, 0);
+    shadeCoral(lip, () => 1);
+    const hollow = new THREE.CircleGeometry(radius * 1.05, 12);
+    hollow.rotateX(-Math.PI / 2);
+    hollow.translate(0, height - radius * 0.35, 0);
+    shadeCoral(hollow, () => 0.12);
+    [wall, lip, hollow].forEach((g) => {
+      if (t > 0) g.rotateZ(-0.16 - coralRand(t + 33) * 0.14);
+      g.rotateY(around);
+      g.translate(Math.cos(around) * offset, 0, -Math.sin(around) * offset);
+      parts.push(g);
+    });
+  }
+  const merged = joinCoral(parts);
+  merged.computeVertexNormals();
+  coralShapes.sponge = merged;
+  return merged;
+}
+
+/** A rounded, slightly flattened pebble (about 0.3 across), for scattering on the sand. */
+export function getPebbleGeometry(): THREE.BufferGeometry {
+  if (coralShapes.pebble) return coralShapes.pebble;
+  const geo = new THREE.IcosahedronGeometry(0.16, 1);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const k = 1 + (coralRand(Math.round(pos.getX(i) * 31 + pos.getY(i) * 57 + pos.getZ(i) * 91)) - 0.5) * 0.22;
+    pos.setXYZ(i, pos.getX(i) * k, pos.getY(i) * k * 0.55, pos.getZ(i) * k);
+  }
+  geo.computeVertexNormals();
+  coralShapes.pebble = geo;
+  return geo;
+}
+
+/** A tuft of seagrass: a few thin curved blades from one root (about 0.9 tall). */
+export function getSeagrassGeometry(): THREE.BufferGeometry {
+  if (coralShapes.seagrass) return coralShapes.seagrass;
+  const parts: THREE.BufferGeometry[] = [];
+  const blades = 6;
+  for (let b = 0; b < blades; b++) {
+    const height = 0.55 + coralRand(b + 70) * 0.4;
+    const blade = new THREE.PlaneGeometry(0.07, height, 1, 4);
+    const bp = blade.attributes.position;
+    for (let i = 0; i < bp.count; i++) {
+      const t = (bp.getY(i) + height / 2) / height;
+      bp.setX(i, bp.getX(i) * (1 - t * 0.8)); // taper to a point
+      bp.setZ(i, t * t * 0.22); // curve over
+      bp.setY(i, t * height);
+    }
+    blade.rotateY((b / blades) * Math.PI * 2 + coralRand(b + 80));
+    blade.translate((coralRand(b + 90) - 0.5) * 0.16, 0, (coralRand(b + 95) - 0.5) * 0.16);
+    shadeCoral(blade, (v) => 0.45 + (v.y / 0.95) * 0.55);
+    parts.push(blade);
+  }
+  const merged = joinCoral(parts);
+  merged.computeVertexNormals();
+  coralShapes.seagrass = merged;
+  return merged;
+}
+
+/**
+ * Coral skin: fine winding grooves, pores and scattered polyp dots on a pale ground.
+ * Used as both colour and bump map, and tinted by each coral's own colour.
+ */
 export function getCoralSurfaceTexture(): THREE.CanvasTexture {
   if (coralSurfaceTexture) return coralSurfaceTexture;
-  const size = 256;
+  const size = 512;
   const canvas = document.createElement('canvas');
   canvas.width = size;
   canvas.height = size;
   const ctx = canvas.getContext('2d')!;
-  ctx.fillStyle = '#f6f6f6';
+  ctx.fillStyle = '#f4f4f4';
   ctx.fillRect(0, 0, size, size);
-  ctx.strokeStyle = '#a9a9a9';
-  ctx.lineWidth = 5;
   ctx.lineCap = 'round';
-  // Winding grooves. Each line is drawn at three horizontal offsets so it tiles.
-  for (let row = 0; row < 9; row++) {
-    for (const shift of [-size, 0, size]) {
-      ctx.beginPath();
-      for (let x = 0; x <= size; x += 4) {
-        const y =
-          row * (size / 9) +
-          14 +
-          Math.sin((x / size) * Math.PI * 2 * 3 + row * 1.9) * 9 +
-          Math.sin((x / size) * Math.PI * 2 * 7 + row * 0.7) * 4;
-        if (x === 0) ctx.moveTo(x + shift, y);
-        else ctx.lineTo(x + shift, y);
+  // Winding grooves in two weights. Each is drawn at three offsets so the texture tiles.
+  for (const [rows, width, shade, wobble] of [
+    [14, 6, '#b3b3b3', 13],
+    [28, 2.2, '#cfcfcf', 6],
+  ] as [number, number, string, number][]) {
+    ctx.strokeStyle = shade;
+    ctx.lineWidth = width;
+    for (let row = 0; row < rows; row++) {
+      for (const shift of [-size, 0, size]) {
+        ctx.beginPath();
+        for (let x = 0; x <= size; x += 4) {
+          const y =
+            row * (size / rows) +
+            12 +
+            Math.sin((x / size) * Math.PI * 2 * 3 + row * 1.9) * wobble +
+            Math.sin((x / size) * Math.PI * 2 * 8 + row * 0.7) * wobble * 0.45;
+          if (x === 0) ctx.moveTo(x + shift, y);
+          else ctx.lineTo(x + shift, y);
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
     }
   }
+  // Pores, then polyps: a dark ring with a pale centre.
   ctx.fillStyle = '#bdbdbd';
-  for (let d = 0; d < 260; d++) {
+  for (let d = 0; d < 900; d++) {
     ctx.beginPath();
-    ctx.arc(coralRand(d) * size, coralRand(d + 500) * size, 1.4, 0, Math.PI * 2);
+    ctx.arc(coralRand(d) * size, coralRand(d + 500) * size, 1.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  for (let d = 0; d < 260; d++) {
+    const x = coralRand(d + 1300) * size;
+    const y = coralRand(d + 1900) * size;
+    ctx.fillStyle = '#9c9c9c';
+    ctx.beginPath();
+    ctx.arc(x, y, 3.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(x, y, 1.7, 0, Math.PI * 2);
     ctx.fill();
   }
   const texture = new THREE.CanvasTexture(canvas);
@@ -395,6 +625,7 @@ export function getCoralSurfaceTexture(): THREE.CanvasTexture {
   texture.wrapT = THREE.RepeatWrapping;
   texture.repeat.set(2, 2);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
   coralSurfaceTexture = texture;
   return texture;
 }
@@ -1351,9 +1582,12 @@ export function createShipwreck(
   const coralColors = [0xf43f5e, 0xfb923c, 0x2dd4bf, 0xc084fc];
   for (let c = 0; c < 8; c++) {
     const coralCluster = new THREE.Mesh(
-      c % 3 === 2 ? getBranchCoralGeometry() : getBrainCoralGeometry(),
+      [getBrainCoralGeometry(), getTableCoralGeometry(), getBranchCoralGeometry(), getTubeSpongeGeometry()][
+        c % 4
+      ],
       new THREE.MeshStandardMaterial({
         color: coralColors[c % coralColors.length],
+        vertexColors: true,
         map: getCoralSurfaceTexture(),
         bumpMap: getCoralSurfaceTexture(),
         bumpScale: 0.05,
