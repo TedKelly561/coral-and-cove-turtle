@@ -46,7 +46,13 @@ export default function App() {
   // Progress saved in this browser by an earlier visit, read once at start-up.
   const [initialSave] = useState<LocalSave | null>(() => loadLocalSave());
   const [hasSavedProgress, setHasSavedProgress] = useState<boolean>(() => hasProgress(initialSave));
-  const completionCelebrated = useRef<boolean>(initialSave?.completionCelebrated ?? false);
+  // Everything there is to find. The celebration plays once per total, so it plays again
+  // if the game later gains new treasures, landmarks or friends.
+  const totalToFind = INITIAL_COLLECTIBLES.length + INITIAL_LANDMARKS.length + INITIAL_WILDLIFE.length;
+  // Saves from before the total was recorded celebrated the original 31 (21 + 4 + 6).
+  const celebratedTotal = useRef<number>(
+    initialSave?.celebratedTotal ?? (initialSave?.completionCelebrated ? 31 : 0)
+  );
   const [isTouchDevice, setIsTouchDevice] = useState<boolean>(
     () => window.matchMedia('(pointer: coarse)').matches
   );
@@ -277,7 +283,7 @@ export default function App() {
 
   const handleStartFresh = () => {
     clearLocalSave();
-    completionCelebrated.current = false;
+    celebratedTotal.current = 0;
     setHasSavedProgress(false);
     setCollectibles(INITIAL_COLLECTIBLES);
     setLandmarks(INITIAL_LANDMARKS);
@@ -327,7 +333,8 @@ export default function App() {
       weatherMood,
       momPosition: positions?.mom,
       babyPosition: positions?.baby,
-      completionCelebrated: completionCelebrated.current,
+      completionCelebrated: celebratedTotal.current > 0,
+      celebratedTotal: celebratedTotal.current,
     });
   };
 
@@ -358,10 +365,12 @@ export default function App() {
     wildlife.every((w) => w.befriended);
 
   useEffect(() => {
-    if (!sanctuaryComplete || completionCelebrated.current || screenState !== 'playing') return;
+    if (!sanctuaryComplete || celebratedTotal.current >= totalToFind || screenState !== 'playing') {
+      return;
+    }
     // Let the last discovery banner be read before the celebration takes over.
     const timer = window.setTimeout(() => {
-      completionCelebrated.current = true;
+      celebratedTotal.current = totalToFind;
       oceanAudio.playFriendshipChime();
       setScreenState('victory');
       saveSnapshot.current();

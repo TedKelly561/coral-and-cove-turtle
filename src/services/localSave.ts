@@ -13,6 +13,12 @@ export interface LocalSave {
   momPosition?: [number, number, number];
   babyPosition?: [number, number, number];
   completionCelebrated: boolean;
+  /**
+   * How many things there were to find when the celebration was last shown. When the game
+   * gains new things to find, the total rises above this and the celebration can play
+   * again. Missing in saves from before this field existed.
+   */
+  celebratedTotal?: number;
 }
 
 const KEY = 'coral-and-cove:save:v1';
