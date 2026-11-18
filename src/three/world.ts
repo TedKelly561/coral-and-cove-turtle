@@ -9,6 +9,7 @@ import {
   createCoconutPalm,
   createCoralCrab,
   createEdibleSeaweedPatch,
+  createFriendshipHalo,
   createMoonJellyfish,
   createSeaAnemone,
   createSeaFan,
@@ -519,7 +520,12 @@ export interface OceanEnvironmentRig {
     turtleCallTimer: number,
     nightFactor: number,
     weatherMood: string
-  ) => { activeReaction: string | null; newlyBefriendedId: string | null };
+  ) => {
+    activeReaction: string | null;
+    newlyBefriendedId: string | null;
+    seenId: string | null;
+    alsoBefriended: string[];
+  };
 }
 
 export function buildOceanWorld(
@@ -1484,6 +1490,11 @@ export function buildOceanWorld(
     };
   });
 
+  // The three newer kinds are befriended as a kind: win over one pufferfish and they are
+  // all friends. Sing to them from close by, or (seahorses and octopuses) simply come near.
+  const newFriends = { pufferfish: false, seahorse: false, octopus: false };
+  const alsoBefriended: string[] = [];
+
   // 10B-2. Pufferfish: each potters around its own patch of reef and puffs up when a
   // turtle swims close.
   const pufferHomes: [number, number][] = [
@@ -1496,8 +1507,12 @@ export function buildOceanWorld(
   const pufferfish = pufferHomes.map(([hx, hz], idx) => {
     const puffer = createPufferfish();
     puffer.group.scale.setScalar(1.5);
+    const halo = createFriendshipHalo();
+    halo.mesh.scale.setScalar(0.55);
+    halo.mesh.position.y = 0.42;
+    puffer.group.add(halo.mesh);
     scene.add(puffer.group);
-    return { ...puffer, hx, hz, phase: idx * 1.9, puff: 0 };
+    return { ...puffer, hx, hz, phase: idx * 1.9, puff: 0, haloMat: halo.mat };
   });
 
   // 10B-3. Seahorses bobbing upright among the kelp and in the grotto.
@@ -1514,8 +1529,12 @@ export function buildOceanWorld(
   const seahorses = seahorseSpots.map(([sx, sz, colorHex], idx) => {
     const horse = createSeahorse(colorHex);
     horse.group.scale.setScalar(1.7);
+    const halo = createFriendshipHalo();
+    halo.mesh.scale.setScalar(0.34);
+    halo.mesh.position.y = 0.66;
+    horse.group.add(halo.mesh);
     scene.add(horse.group);
-    return { ...horse, sx, sz, phase: idx * 2.3 };
+    return { ...horse, sx, sz, phase: idx * 2.3, haloMat: halo.mat, twirl: 0 };
   });
 
   // 10B-4. Octopuses creeping slowly over the seabed.
@@ -1526,8 +1545,14 @@ export function buildOceanWorld(
   const octopuses = octopusBeats.map(([ox, oz, beat, colorHex], idx) => {
     const octo = createOctopus(colorHex);
     octo.group.scale.setScalar(1.25);
+    const halo = createFriendshipHalo();
+    halo.mesh.position.y = 1.0;
+    octo.group.add(halo.mesh);
     scene.add(octo.group);
-    return { ...octo, ox, oz, beat, angle: idx * 2.1 };
+    const octoMat = octo.mantle.material as THREE.MeshStandardMaterial;
+    octoMat.emissive = new THREE.Color(colorHex);
+    octoMat.emissiveIntensity = 0;
+    return { ...octo, ox, oz, beat, angle: idx * 2.1, haloMat: halo.mat, octoMat, blush: 0 };
   });
 
   // 10C. Living Procedural Coral Reef Sanctuaries (Swaying Staghorns, Gorgonian Sea Fans & Anemones)
@@ -1738,9 +1763,19 @@ export function buildOceanWorld(
     turtleCallTimer: number,
     nightFactor: number,
     weatherMood: string
-  ): { activeReaction: string | null; newlyBefriendedId: string | null } => {
+  ): {
+    activeReaction: string | null;
+    newlyBefriendedId: string | null;
+    seenId: string | null;
+    alsoBefriended: string[];
+  } => {
     let activeReaction: string | null = null;
     let newlyBefriendedId: string | null = null;
+    // An animal spotted this frame but not (yet) befriended.
+    let seenId: string | null = null;
+    // Friendships made this frame by the newer animals. A list, so one is never lost when
+    // another animal claims newlyBefriendedId in the same frame.
+    alsoBefriended.length = 0;
 
     waterUniforms.uTime.value = elapsed;
     terrainUniforms.uTime.value = elapsed;
@@ -2023,16 +2058,13 @@ export function buildOceanWorld(
       cf.tailMesh.rotation.y = Math.sin(elapsed * 9 + idx) * 0.45;
     });
 
-    // 1C-2. Pufferfish: lazy wander; swell up and bristle when a turtle is close.
+    // 1C-2. Pufferfish: lazy wander. Strangers make them swell up and bristle; a song from
+    // close by wins them over, and friends are greeted smooth and calm.
     pufferfish.forEach((pf, idx) => {
       const a = elapsed * 0.3 + pf.phase;
       const r = 2.2 + Math.sin(a * 1.7 + idx) * 0.8;
       _vec3B.set(pf.hx + Math.cos(a) * r, 0, pf.hz + Math.sin(a) * r);
-      _vec3A.set(
-        pf.hx + Math.cos(a + 0.1) * r,
-        0,
-        pf.hz + Math.sin(a + 0.1) * r
-      );
+      _vec3A.set(pf.hx + Math.cos(a + 0.1) * r, 0, pf.hz + Math.sin(a + 0.1) * r);
       const py = Math.min(
         -1.0,
         groundHeightAt(_vec3B.x, _vec3B.z) + 1.3 + Math.sin(elapsed * 0.9 + idx * 2) * 0.3
@@ -2040,15 +2072,24 @@ export function buildOceanWorld(
       _vec3B.y = py;
       _vec3A.y = py;
       const near = Math.min(_vec3B.distanceTo(momPos), _vec3B.distanceTo(babyPos));
-      pf.puff = THREE.MathUtils.damp(pf.puff, near < 3.4 ? 1 : 0, near < 3.4 ? 6 : 1.5, dt);
+      if (near < 9) seenId = 'wildlife-pufferfish';
+      if (near < 7.5 && turtleCallTimer > 0) {
+        if (!newFriends.pufferfish) alsoBefriended.push('wildlife-pufferfish');
+        newFriends.pufferfish = true;
+      }
+      const startled = near < 3.4 && !newFriends.pufferfish;
+      pf.puff = THREE.MathUtils.damp(pf.puff, startled ? 1 : 0, startled ? 6 : 1.5, dt);
       pf.group.position.copy(_vec3B);
       pf.group.lookAt(_vec3A);
       pf.body.scale.set(1 + pf.puff * 0.75, 1 + pf.puff * 0.75, 1 + pf.puff * 0.35);
       pf.spikes.scale.setScalar(Math.max(0.001, pf.puff));
-      if (near < 3.4) activeReaction = 'Pufferfish puffing up into a spiky ball!';
+      pf.haloMat.opacity = THREE.MathUtils.damp(pf.haloMat.opacity, newFriends.pufferfish ? 0.85 : 0, 4, dt);
+      if (startled) activeReaction = 'Pufferfish puffing up into a spiky ball! Sing to calm it';
+      else if (near < 3.4) activeReaction = 'Pufferfish friend bobbing along beside you';
     });
 
-    // 1C-3. Seahorses: hover upright, drift a little, flutter the back fin.
+    // 1C-3. Seahorses: hover upright, drift a little, flutter the back fin, and twirl
+    // when they make a friend.
     seahorses.forEach((sh, idx) => {
       const drift = elapsed * 0.25 + sh.phase;
       const hx = sh.sx + Math.cos(drift) * 0.5;
@@ -2058,24 +2099,55 @@ export function buildOceanWorld(
         groundHeightAt(hx, hz) + 1.5 + Math.sin(elapsed * 0.8 + sh.phase) * 0.35
       );
       sh.group.position.set(hx, hy, hz);
-      sh.group.rotation.y = Math.sin(elapsed * 0.2 + sh.phase) * 1.2 + idx;
+      const near = Math.min(sh.group.position.distanceTo(momPos), sh.group.position.distanceTo(babyPos));
+      if (near < 8) seenId = 'wildlife-seahorse';
+      if ((near < 7.5 && turtleCallTimer > 0) || near < 2.4) {
+        if (!newFriends.seahorse) {
+          seahorses.forEach((other) => (other.twirl = 1));
+          alsoBefriended.push('wildlife-seahorse');
+        }
+        newFriends.seahorse = true;
+      }
+      if (near < 7.5 && turtleCallTimer > 0) sh.twirl = 1;
+      sh.twirl = Math.max(0, sh.twirl - dt * 0.45);
+      sh.group.rotation.y =
+        Math.sin(elapsed * 0.2 + sh.phase) * 1.2 + idx + (1 - sh.twirl) * Math.PI * 4 * (sh.twirl > 0 ? 1 : 0);
       sh.group.rotation.x = Math.sin(elapsed * 0.8 + sh.phase) * 0.08;
       sh.fin.rotation.y = Math.sin(elapsed * 22 + idx) * 0.5;
+      sh.haloMat.opacity = THREE.MathUtils.damp(sh.haloMat.opacity, newFriends.seahorse ? 0.85 : 0, 4, dt);
+      if (near < 4) activeReaction = newFriends.seahorse
+        ? 'Seahorse friends twirling among the kelp'
+        : 'Shy seahorses peeking out. Sing softly to say hello';
     });
 
-    // 1C-4. Octopuses: creep round a small beat on the seabed, arms rippling.
+    // 1C-4. Octopuses: creep round a small beat on the seabed, arms rippling. They blush
+    // a brighter colour when greeting a friend.
     octopuses.forEach((oc, idx) => {
       oc.angle += dt * 0.09;
       const cx = oc.ox + Math.cos(oc.angle) * oc.beat;
       const cz = oc.oz + Math.sin(oc.angle) * oc.beat;
       oc.group.position.set(cx, groundHeightAt(cx, cz) + 0.12, cz);
       oc.group.rotation.y = -oc.angle;
+      const near = Math.min(oc.group.position.distanceTo(momPos), oc.group.position.distanceTo(babyPos));
+      if (near < 9) seenId = 'wildlife-octopus';
+      if ((near < 7.5 && turtleCallTimer > 0) || near < 2.8) {
+        if (!newFriends.octopus) alsoBefriended.push('wildlife-octopus');
+        newFriends.octopus = true;
+      }
+      const greeting = newFriends.octopus && near < 6;
+      oc.blush = THREE.MathUtils.damp(oc.blush, greeting ? 1 : 0, 3, dt);
+      oc.octoMat.emissiveIntensity = oc.blush * (0.35 + Math.sin(elapsed * 4) * 0.12);
       const breath = 1 + Math.sin(elapsed * 1.6 + idx) * 0.05;
       oc.mantle.scale.set(breath, 2 - breath, breath);
+      const wave = 1 + oc.blush * 1.6;
       oc.arms.forEach((arm, k) => {
-        arm.rotation.x = Math.sin(elapsed * 1.3 + k * 0.8 + idx) * 0.12;
-        arm.rotation.z = Math.cos(elapsed * 1.1 + k * 1.1) * 0.1;
+        arm.rotation.x = Math.sin(elapsed * 1.3 * wave + k * 0.8 + idx) * 0.12 * wave;
+        arm.rotation.z = Math.cos(elapsed * 1.1 * wave + k * 1.1) * 0.1;
       });
+      oc.haloMat.opacity = THREE.MathUtils.damp(oc.haloMat.opacity, newFriends.octopus ? 0.85 : 0, 4, dt);
+      if (near < 6) activeReaction = newFriends.octopus
+        ? 'Octopus friend blushing and waving all eight arms'
+        : 'A curious octopus watching you. Swim closer or sing';
     });
 
     // 1D. Update Coral Crabs (Sideways scuttle, claw pinch, and swimming flutter)
@@ -2344,7 +2416,7 @@ export function buildOceanWorld(
       }
     });
 
-    return { activeReaction, newlyBefriendedId };
+    return { activeReaction, newlyBefriendedId, seenId, alsoBefriended };
   };
 
   return {

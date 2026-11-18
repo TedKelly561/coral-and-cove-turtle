@@ -1295,7 +1295,8 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
       });
 
       // 12. Update Interactive Marine Wildlife & Friendship States
-      const { activeReaction, newlyBefriendedId } = worldRig.updateEnvironment(
+      const { activeReaction, newlyBefriendedId, seenId, alsoBefriended } =
+        worldRig.updateEnvironment(
         dt,
         elapsed,
         momPos,
@@ -1307,6 +1308,10 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         currentProps.weatherMood
       );
 
+      if (currentProps.screenState === 'playing') {
+        if (seenId) currentProps.onMeetWildlife(seenId, false);
+        alsoBefriended.forEach((id) => currentProps.onMeetWildlife(id, true));
+      }
       if (newlyBefriendedId && currentProps.screenState === 'playing') {
         currentProps.onMeetWildlife(newlyBefriendedId, true);
       }
