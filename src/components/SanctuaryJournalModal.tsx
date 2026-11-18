@@ -7,6 +7,7 @@ import {
   StoryLandmark,
   WeatherMood,
   WildlifeSighting,
+  FollowMode,
 } from '../types/game';
 import {
   deleteDriveFile,
@@ -30,6 +31,8 @@ interface SanctuaryJournalModalProps {
   autoCycleTime: boolean;
   weatherMood: WeatherMood;
   isMuted: boolean;
+  followMode: FollowMode;
+  onChangeFollowMode: (mode: FollowMode) => void;
   onChangeWeatherMood: (mood: WeatherMood) => void;
   onChangeDayTimeHours: (hours: number) => void;
   onToggleAutoCycleTime: () => void;
@@ -52,6 +55,8 @@ export const SanctuaryJournalModal: React.FC<SanctuaryJournalModalProps> = ({
   autoCycleTime,
   weatherMood,
   isMuted,
+  followMode,
+  onChangeFollowMode,
   onChangeWeatherMood,
   onChangeDayTimeHours,
   onToggleAutoCycleTime,
@@ -735,6 +740,61 @@ export const SanctuaryJournalModal: React.FC<SanctuaryJournalModalProps> = ({
           {/* TAB 4: WEATHER EFFECTS & SANCTUARY SETTINGS */}
           {activeTab === 'settings' && (
             <div className="space-y-6">
+              <div className="p-5 rounded-xl bg-slate-950/90 border border-slate-800 space-y-4">
+                <div>
+                  <h3 className="text-base font-semibold text-white">Swimming Together</h3>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Choose who leads. The other turtle follows along, but only while nobody is
+                    steering her.
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {(
+                    [
+                      {
+                        id: 'auto' as FollowMode,
+                        title: 'Take Turns',
+                        desc: 'Whoever swims leads. Swim only Baby and Mom follows her; swim only Mom and Baby follows.',
+                      },
+                      {
+                        id: 'baby_leads' as FollowMode,
+                        title: 'Baby Leads',
+                        desc: 'Mom always follows Baby. Best when one player swims as Baby.',
+                      },
+                      {
+                        id: 'mom_leads' as FollowMode,
+                        title: 'Mom Leads',
+                        desc: 'Baby always follows Mom. Best when one player swims as Mom.',
+                      },
+                      {
+                        id: 'free' as FollowMode,
+                        title: 'Swim Free',
+                        desc: 'Nobody follows. Each turtle stays wherever her player leaves her.',
+                      },
+                    ] as const
+                  ).map((option) => {
+                    const isSelected = followMode === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        onClick={() => onChangeFollowMode(option.id)}
+                        aria-pressed={isSelected}
+                        className={`text-left p-4 rounded-xl border transition-colors cursor-pointer ${
+                          isSelected
+                            ? 'bg-teal-500/15 border-teal-400 text-white'
+                            : 'bg-slate-900/70 border-slate-800 text-slate-300 hover:border-slate-600'
+                        }`}
+                      >
+                        <span className="block text-sm font-semibold">{option.title}</span>
+                        <span className="block text-xs text-slate-400 mt-1 leading-snug">
+                          {option.desc}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               <div className="p-5 rounded-xl bg-slate-950/90 border border-slate-800 space-y-4">
                 <div>
                   <h3 className="text-base font-semibold text-white">

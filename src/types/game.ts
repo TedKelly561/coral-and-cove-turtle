@@ -2,6 +2,14 @@ export type GameScreenState = 'title' | 'playing' | 'paused' | 'victory';
 
 export type CameraMode = 'dynamic_coop' | 'split_screen' | 'follow_mom' | 'follow_baby';
 
+/**
+ * Who leads when the two turtles swim together.
+ *  - auto: whoever was steered most recently leads and the other follows
+ *  - mom_leads / baby_leads: that turtle always leads
+ *  - free: nobody follows; each turtle stays where its player leaves it
+ */
+export type FollowMode = 'auto' | 'mom_leads' | 'baby_leads' | 'free';
+
 export type TimeOfDay = 'morning' | 'noon' | 'sunset' | 'bioluminescent';
 
 export type WeatherMood =

@@ -10,6 +10,7 @@ import {
   StoryLandmark,
   WeatherMood,
   WildlifeSighting,
+  FollowMode,
 } from '../types/game';
 import { createProceduralTextures } from '../three/textures';
 import {
@@ -77,7 +78,7 @@ interface OceanCanvasProps {
   dayTimeHours: number;
   autoCycleTime: boolean;
   weatherMood: WeatherMood;
-  babyFollowingMom: boolean;
+  followMode: FollowMode;
   piggybackActive: boolean;
   collectibles: CollectibleItem[];
   landmarks: StoryLandmark[];
@@ -491,6 +492,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
     let frameId = 0;
     let isDisposed = false;
     let camHeldUnderwater = false;
+    let leader: 'mom' | 'baby' | 'none' = 'mom';
     let wreckCamBlend = 0;
     let momWreckBlend = 0;
     let babyWreckBlend = 0;
@@ -709,7 +711,8 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         if (p1BarrelRoll && simRef.current.momBarrelRoll <= 0.05) {
           simRef.current.momBarrelRoll = 1.0;
           oceanAudio.playBarrelRollBubbles(true);
-          if (currentProps.babyFollowingMom) {
+          // A follower copies the leader's roll.
+          if (leader === 'mom') {
             simRef.current.babyBarrelRoll = 1.0;
           }
         }
@@ -841,6 +844,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         if (p2BarrelRoll && simRef.current.babyBarrelRoll <= 0.05) {
           simRef.current.babyBarrelRoll = 1.0;
           oceanAudio.playBarrelRollBubbles(false);
+          if (leader === 'baby') simRef.current.momBarrelRoll = 1.0;
         }
 
         const p1HasManualInput =
@@ -857,19 +861,29 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
           p2Boost ||
           p2BarrelRoll;
 
-        // Detect single player mode: if one player is actively swimming and the other is not being controlled,
-        // we never tether, snap, or drag the active turtle back to the idle turtle!
-        isSinglePlayerBaby =
-          currentProps.cameraMode === 'follow_baby' ||
-          (p2HasManualInput && !p1HasManualInput && !pad1 && !heldKeys.has('KeyW') && !heldKeys.has('KeyA') && !heldKeys.has('KeyS') && !heldKeys.has('KeyD'));
+        // Who leads. In "auto" it is whoever was steered most recently, so a player who
+        // swims only Baby is never pulled back to Mom: Mom comes along behind her instead.
+        if (currentProps.followMode === 'mom_leads') leader = 'mom';
+        else if (currentProps.followMode === 'baby_leads') leader = 'baby';
+        else if (currentProps.followMode === 'free') leader = 'none';
+        else {
+          if (leader === 'none') leader = 'mom';
+          if (p2HasManualInput && !p1HasManualInput) leader = 'baby';
+          else if (p1HasManualInput && !p2HasManualInput) leader = 'mom';
+        }
+        // A turtle follows only while its own player is not steering it.
+        const babyFollows = leader === 'mom' && !p2HasManualInput;
+        const momFollows = leader === 'baby' && !p1HasManualInput;
 
+        // Camera focus: the fixed Mom and Baby views, or the leader while the other tags along.
+        isSinglePlayerBaby = currentProps.cameraMode === 'follow_baby' || momFollows;
         isSinglePlayerMom =
           currentProps.cameraMode === 'follow_mom' ||
-          (p1HasManualInput && !p2HasManualInput && !pad2 && !heldKeys.has('ArrowUp') && !heldKeys.has('ArrowLeft') && !heldKeys.has('ArrowRight') && !heldKeys.has('ArrowDown'));
+          (leader === 'mom' && !p2HasManualInput && p1HasManualInput);
 
         prevBabySpeed = babySpeed;
 
-        if (currentProps.piggybackActive && !p2HasManualInput && !isSinglePlayerBaby) {
+        if (currentProps.piggybackActive && !p2HasManualInput && leader !== 'baby') {
           _vec3A
             .set(0, 0.72, -0.15)
             .applyAxisAngle(_vec3B.set(0, 1, 0), momHeading)
@@ -879,7 +893,7 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
           babyPitch = THREE.MathUtils.damp(babyPitch, momPitch, 8, dt);
           babyRoll = THREE.MathUtils.damp(babyRoll, momRoll, 8, dt);
           babySpeed = momSpeed;
-        } else if (currentProps.babyFollowingMom && !p2HasManualInput && !isSinglePlayerBaby) {
+        } else if (babyFollows) {
           // In Mom-lead mode, Baby glides gently toward Mom without creating any pull or drag on Mom
           _vec3A
             .set(3.1, 0.25, -1.4)
@@ -958,8 +972,33 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         resolveSolidObstacles(babyPos, 0.65);
         if (!currentProps.piggybackActive) resolveSoftObstacles(babyPos, 0.45, dt);
 
-        // Keep the two shells from passing through each other. Baby gives way,
-        // except while riding on Mom's back, where touching is the point.
+        // Mom tags along when Baby leads: she glides to a spot just behind and beside Baby,
+        // at her own pace, and is never dragged while her player is steering.
+        if (momFollows && !currentProps.piggybackActive) {
+          _vec3A
+            .set(-3.2, -0.15, -2.0)
+            .applyAxisAngle(_vec3B.set(0, 1, 0), babyHeading)
+            .add(babyPos);
+          const distToSlot = momPos.distanceTo(_vec3A);
+          const followRate = Math.min(6.5, 2.2 + distToSlot * 0.45);
+          momPos.lerp(_vec3A, Math.min(1, dt * Math.min(3.0, followRate)));
+          momHeading = THREE.MathUtils.damp(momHeading, babyHeading, 4.5, dt);
+          momPitch = THREE.MathUtils.damp(momPitch, babyPitch, 4.5, dt);
+          momRoll = THREE.MathUtils.damp(momRoll, Math.sin(elapsed * 1.8) * 0.08, 4.0, dt);
+          momSpeed = Math.min(7.0, Math.max(babySpeed, distToSlot * 0.95));
+          // Same seabed, surface and obstacle limits as when she is steered.
+          const followFootprint = sampleFootprintGround(momPos.x, momPos.z, momHeading, 1.5, 1.3);
+          momPos.y = THREE.MathUtils.clamp(
+            momPos.y,
+            followFootprint.maxGroundY + 0.48,
+            Math.max(followFootprint.maxGroundY + 0.48, 0.25)
+          );
+          resolveSolidObstacles(momPos, 1.25);
+          resolveSoftObstacles(momPos, 0.8, dt);
+        }
+
+        // Keep the two shells from passing through each other. The follower gives way
+        // (Baby, unless Mom is the one following), except while riding on Mom's back.
         if (!currentProps.piggybackActive) {
           const sepX = babyPos.x - momPos.x;
           const sepZ = babyPos.z - momPos.z;
@@ -971,8 +1010,13 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
             const nx = flatDist > 0.001 ? sepX / flatDist : Math.cos(momHeading);
             const nz = flatDist > 0.001 ? sepZ / flatDist : -Math.sin(momHeading);
             const push = (minFlatDist - flatDist) * Math.min(1, dt * 9);
-            babyPos.x += nx * push;
-            babyPos.z += nz * push;
+            if (momFollows) {
+              momPos.x -= nx * push;
+              momPos.z -= nz * push;
+            } else {
+              babyPos.x += nx * push;
+              babyPos.z += nz * push;
+            }
           }
         }
 
@@ -1295,7 +1339,8 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
       });
 
       // 12. Update Interactive Marine Wildlife & Friendship States
-      const { activeReaction, newlyBefriendedId } = worldRig.updateEnvironment(
+      const { activeReaction, newlyBefriendedId, seenId, alsoBefriended } =
+        worldRig.updateEnvironment(
         dt,
         elapsed,
         momPos,
@@ -1307,6 +1352,10 @@ export const OceanCanvas = forwardRef<OceanCanvasHandle, OceanCanvasProps>((prop
         currentProps.weatherMood
       );
 
+      if (currentProps.screenState === 'playing') {
+        if (seenId) currentProps.onMeetWildlife(seenId, false);
+        alsoBefriended.forEach((id) => currentProps.onMeetWildlife(id, true));
+      }
       if (newlyBefriendedId && currentProps.screenState === 'playing') {
         currentProps.onMeetWildlife(newlyBefriendedId, true);
       }
