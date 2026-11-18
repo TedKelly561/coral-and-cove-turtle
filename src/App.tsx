@@ -6,6 +6,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   CameraMode,
+  FollowMode,
   CollectibleItem,
   ControllerStatus,
   GameHudState,
@@ -65,7 +66,24 @@ export default function App() {
   const [weatherMood, setWeatherMood] = useState<WeatherMood>(
     initialSave?.weatherMood ?? 'sunlit_calm'
   );
-  const [babyFollowingMom, setBabyFollowingMom] = useState<boolean>(true);
+  // Who leads when the turtles swim together. Remembered on this device.
+  const [followMode, setFollowMode] = useState<FollowMode>(() => {
+    try {
+      const stored = window.localStorage.getItem('coral-and-cove:follow-mode');
+      if (stored === 'mom_leads' || stored === 'baby_leads' || stored === 'free') return stored;
+    } catch {
+      // Storage unavailable: use the default.
+    }
+    return 'auto';
+  });
+  const handleChangeFollowMode = (mode: FollowMode) => {
+    setFollowMode(mode);
+    try {
+      window.localStorage.setItem('coral-and-cove:follow-mode', mode);
+    } catch {
+      // Not saved; the choice still applies for this visit.
+    }
+  };
   const [piggybackActive, setPiggybackActive] = useState<boolean>(false);
   const [isDockCollapsed, setIsDockCollapsed] = useState<boolean>(true);
   const [isMuted, setIsMuted] = useState<boolean>(false);
@@ -455,7 +473,7 @@ export default function App() {
         dayTimeHours={dayTimeHours}
         autoCycleTime={autoCycleTime}
         weatherMood={weatherMood}
-        babyFollowingMom={babyFollowingMom}
+        followMode={followMode}
         piggybackActive={piggybackActive}
         collectibles={collectibles}
         landmarks={landmarks}
@@ -1048,6 +1066,8 @@ export default function App() {
         autoCycleTime={autoCycleTime}
         weatherMood={weatherMood}
         isMuted={isMuted}
+        followMode={followMode}
+        onChangeFollowMode={handleChangeFollowMode}
         currentZone={hud.currentZone}
         onClose={() => setScreenState('playing')}
         onChangeWeatherMood={(mood) => {
